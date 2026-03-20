@@ -225,3 +225,9 @@ npm run dev
   - [Sketchfab](https://sketchfab.com/)
 - FBX 轉 VRMA 工具：
   - [tk256ailab/fbx2vrma-converter](https://github.com/tk256ailab/fbx2vrma-converter)
+
+## 版權與素材聲明
+
+本專案雖然包含部分 2D / 3D 模型與相關範例資源，但這些資源均取自公開可取得的資源網站，僅供本專案測試、研究與功能驗證用途。
+
+若你要在實際產品、商業場景、公開散布、二次創作或其他正式用途使用這些模型與素材，應自行確認並遵守各原始資源作者、發布頁面或來源平台所附帶的版權聲明、授權條款與使用限制。本專案的程式碼授權不等同於這些第三方模型素材的授權範圍。
