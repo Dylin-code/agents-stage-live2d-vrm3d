@@ -160,6 +160,47 @@
             </button>
           </div>
         </div>
+        <div class="role-setting-item">
+          <div class="role-setting-header">
+            <label>前端設定備份</label>
+          </div>
+          <div class="role-setting-note">
+            匯出目前 localStorage 內的前端設定；匯入或套用範例後會自動重新整理頁面。
+          </div>
+          <div class="config-backup-actions">
+            <button
+              type="button"
+              class="role-setting-behavior-flow-btn"
+              @click="exportFrontendConfig"
+            >
+              匯出設定 JSON
+            </button>
+            <button
+              type="button"
+              class="role-setting-behavior-flow-btn secondary"
+              @click="triggerFrontendConfigImport"
+            >
+              匯入設定 JSON
+            </button>
+            <button
+              type="button"
+              class="role-setting-behavior-flow-btn secondary"
+              @click="applyDefaultFrontendConfig"
+            >
+              套用專案範例設定
+            </button>
+          </div>
+          <input
+            ref="frontendConfigFileInput"
+            type="file"
+            accept="application/json"
+            class="config-backup-file-input"
+            @change="handleFrontendConfigImport"
+          >
+          <a class="config-backup-link" href="/default-config.json" target="_blank" rel="noopener">
+            查看專案內建範例：`/default-config.json`
+          </a>
+        </div>
       </div>
     </div>
 
@@ -296,6 +337,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { message } from 'ant-design-vue'
 
 import ChatPage from '../chat.vue'
 import { useSessionStage, type SessionStageRenderer } from '../../pages/session-stage/useSessionStage'
@@ -327,6 +369,12 @@ import {
   VRM_INTERACTION_EDITOR_TOGGLE_EVENT,
   VRM_INTERACTION_POINTS_RELOAD_EVENT,
 } from './vrmInteractionPointEvents'
+import {
+  applyFrontendConfigBackup,
+  createFrontendConfigBackup,
+  listManagedFrontendStorageKeys,
+  parseFrontendConfigBackup,
+} from '../../utils/frontendConfigBackup'
 
 interface Props {
   rendererMode?: SessionStageRenderer
@@ -344,6 +392,7 @@ const vrmGlobalGroundOffset = ref(0)
 const vrmActorScale = ref(VRM_ACTOR_SCALE_DEFAULT)
 const vrmActorSlotOptions = DEFAULT_VRM_ACTOR_SLOT_OPTIONS
 const vrmActorSlotConfig = ref<string[]>(loadVrmActorSlotConfig(vrmActorSlotOptions))
+const frontendConfigFileInput = ref<HTMLInputElement | null>(null)
 
 const vrmGlobalGroundOffsetLabel = computed(() => `${(vrmGlobalGroundOffset.value * 100).toFixed(1)} cm`)
 const vrmActorScaleLabel = computed(() => `${Math.round(vrmActorScale.value * 100)}%`)
@@ -433,6 +482,93 @@ function reloadInteractionPoints(): void {
   window.dispatchEvent(new CustomEvent(VRM_INTERACTION_POINTS_RELOAD_EVENT))
 }
 
+function downloadJsonFile(filename: string, payload: string): void {
+  const blob = new Blob([payload], { type: 'application/json;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  anchor.click()
+  URL.revokeObjectURL(url)
+}
+
+function buildBackupFilename(): string {
+  const now = new Date()
+  const parts = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, '0'),
+    String(now.getDate()).padStart(2, '0'),
+    '-',
+    String(now.getHours()).padStart(2, '0'),
+    String(now.getMinutes()).padStart(2, '0'),
+    String(now.getSeconds()).padStart(2, '0'),
+  ]
+  return `frontend-config-backup-${parts.join('')}.json`
+}
+
+function reloadPageForImportedConfig(successText: string): void {
+  message.success(successText)
+  window.setTimeout(() => {
+    window.location.reload()
+  }, 250)
+}
+
+function exportFrontendConfig(): void {
+  try {
+    const backup = createFrontendConfigBackup(window.localStorage)
+    downloadJsonFile(buildBackupFilename(), JSON.stringify(backup, null, 2))
+    message.success(`已匯出 ${Object.keys(backup.entries).length} 個設定鍵`)
+  } catch (error) {
+    console.error('Failed to export frontend config', error)
+    message.error('匯出設定失敗')
+  }
+}
+
+function triggerFrontendConfigImport(): void {
+  frontendConfigFileInput.value?.click()
+}
+
+async function handleFrontendConfigImport(event: Event): Promise<void> {
+  const target = event.target as HTMLInputElement | null
+  const file = target?.files?.[0]
+  if (!file) return
+  try {
+    const text = await file.text()
+    const parsed = parseFrontendConfigBackup(text)
+    if (!window.confirm('匯入會覆蓋目前前端 localStorage 設定，是否繼續？')) {
+      return
+    }
+    applyFrontendConfigBackup(window.localStorage, parsed)
+    reloadPageForImportedConfig('設定已匯入，頁面重新整理中')
+  } catch (error) {
+    console.error('Failed to import frontend config', error)
+    message.error('匯入設定失敗，請確認 JSON 格式正確')
+  } finally {
+    if (target) target.value = ''
+  }
+}
+
+async function applyDefaultFrontendConfig(): Promise<void> {
+  try {
+    if (!window.confirm('這會用專案內建範例覆蓋目前前端設定，是否繼續？')) return
+    await applyDefaultFrontendConfigAndReload('已套用專案範例設定，頁面重新整理中')
+  } catch (error) {
+    console.error('Failed to apply default frontend config', error)
+    message.error('套用專案範例設定失敗')
+  }
+}
+
+async function applyDefaultFrontendConfigAndReload(successText: string): Promise<void> {
+  const response = await fetch('/default-config.json', { cache: 'no-store' })
+  if (!response.ok) {
+    throw new Error(`Failed to fetch default config: ${response.status}`)
+  }
+  const text = await response.text()
+  const parsed = parseFrontendConfigBackup(text)
+  applyFrontendConfigBackup(window.localStorage, parsed)
+  reloadPageForImportedConfig(successText)
+}
+
 function switchView(): void {
   if (route.path === props.switchToPath) return
   void router.push(props.switchToPath)
@@ -504,7 +640,16 @@ function onBrandChange(): void {
   newSessionForm.plan_mode = false
 }
 
-onMounted(() => {
+onMounted(async () => {
+  try {
+    if (listManagedFrontendStorageKeys(window.localStorage).length === 0) {
+      await applyDefaultFrontendConfigAndReload('未偵測到前端設定，已自動載入專案範例設定')
+      return
+    }
+  } catch (error) {
+    console.error('Failed to bootstrap default frontend config', error)
+  }
+
   vrmGlobalGroundOffset.value = loadVrmGlobalGroundOffset()
   vrmActorScale.value = loadVrmActorScale()
   vrmActorSlotConfig.value = loadVrmActorSlotConfig(vrmActorSlotOptions)
@@ -1065,9 +1210,20 @@ canvas {
   transition: background 0.15s, border-color 0.15s;
 }
 
+.role-setting-behavior-flow-btn.secondary {
+  border-color: rgba(137, 188, 255, 0.34);
+  background: rgba(21, 44, 76, 0.62);
+  color: #dcecff;
+}
+
 .role-setting-behavior-flow-btn:hover {
   background: rgba(49, 33, 8, 0.76);
   border-color: rgba(255, 220, 124, 0.65);
+}
+
+.role-setting-behavior-flow-btn.secondary:hover {
+  background: rgba(30, 62, 107, 0.78);
+  border-color: rgba(168, 209, 255, 0.54);
 }
 
 .role-setting-note {
@@ -1075,6 +1231,34 @@ canvas {
   color: rgba(205, 222, 244, 0.86);
   font-size: 12px;
   line-height: 1.5;
+}
+
+.config-backup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.config-backup-actions .role-setting-behavior-flow-btn {
+  width: auto;
+  min-width: 140px;
+}
+
+.config-backup-file-input {
+  display: none;
+}
+
+.config-backup-link {
+  display: inline-block;
+  margin-top: 8px;
+  color: rgba(176, 220, 255, 0.92);
+  font-size: 12px;
+  text-decoration: none;
+  word-break: break-all;
+}
+
+.config-backup-link:hover {
+  text-decoration: underline;
 }
 
 .chat-dock {
