@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>VRM + VRMA 測試頁</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: "Noto Sans TC", sans-serif; background: #16181d; color: #f6f7fb; }
+        canvas { display: block; }
+        #controls {
+            position: absolute;
+            top: 12px;
+            left: 12px;
+            width: min(500px, calc(100vw - 24px));
+            background: rgba(18, 20, 24, 0.9);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            padding: 14px;
+            border-radius: 10px;
+            backdrop-filter: blur(8px);
+            z-index: 6;
+        }
+        h3 { margin: 0 0 10px; font-size: 16px; }
+        p { margin: 8px 0 0; font-size: 12px; opacity: 0.85; }
+        .toolbar, #vrmaList { display: flex; flex-wrap: wrap; gap: 8px; }
+        .toolbar { margin-top: 10px; }
+        button {
+            cursor: pointer;
+            padding: 7px 11px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            background: #232835;
+            color: #f6f7fb;
+            font-size: 13px;
+        }
+        button:hover:enabled { background: #2f3650; }
+        button:disabled { opacity: 0.45; cursor: not-allowed; }
+        #status { margin-top: 10px; font-size: 12px; color: #9cc0ff; min-height: 16px; }
+
+        .session-head-label {
+            pointer-events: none;
+            min-width: 134px;
+            max-width: 210px;
+            border-radius: 12px;
+            border: 1px solid rgba(186, 217, 255, 0.62);
+            background: rgba(8, 18, 30, 0.86);
+            box-shadow: 0 12px 28px rgba(0, 0, 0, 0.34);
+            color: #f3f8ff;
+            padding: 7px 9px;
+            text-align: center;
+            transform: translate(-50%, calc(-100% - 8px));
+            transform-origin: center bottom;
+        }
+        .session-head-label::after {
+            content: '';
+            position: absolute;
+            left: 50%;
+            bottom: -8px;
+            width: 12px;
+            height: 12px;
+            transform: translateX(-50%) rotate(45deg);
+            border-right: 1px solid rgba(186, 217, 255, 0.62);
+            border-bottom: 1px solid rgba(186, 217, 255, 0.62);
+            background: rgba(8, 18, 30, 0.86);
+        }
+        .session-head-label .title {
+            font-size: 12px;
+            font-weight: 700;
+            line-height: 1.2;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .session-head-label .state {
+            margin-top: 4px;
+            font-size: 11px;
+            opacity: 0.9;
+        }
+        .session-head-label.selected {
+            box-shadow: 0 0 0 1px rgba(131, 225, 255, 0.5), 0 12px 28px rgba(0, 0, 0, 0.34);
+        }
+        .session-head-label.state-idle { border-color: rgba(190, 205, 219, 0.74); }
+        .session-head-label.state-thinking { border-color: rgba(255, 218, 136, 0.84); }
+        .session-head-label.state-tooling { border-color: rgba(168, 199, 255, 0.84); }
+        .session-head-label.state-responding { border-color: rgba(136, 237, 227, 0.88); }
+        .session-head-label.state-waiting { border-color: rgba(255, 153, 153, 0.9); }
+    </style>
+</head>
+<body>
+
+    <div id="controls">
+        <h3>VRM + VRMA 動作測試</h3>
+        <div id="vrmaList"></div>
+        <div class="toolbar">
+            <button id="playBtn" disabled>全員播放</button>
+            <button id="pauseBtn" disabled>全員暫停/續播</button>
+            <button id="stopBtn" disabled>全員停止</button>
+        </div>
+        <div id="status">初始化中...</div>
+        <p><small>滾輪縮放 / 滑鼠左鍵旋轉 / 點角色可開對話</small></p>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.176.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.176.0/examples/jsm/",
+                "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3/lib/three-vrm.module.min.js",
+                "@pixiv/three-vrm-animation": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm-animation@3/lib/three-vrm-animation.module.min.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+        import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
+        import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-vrm-animation';
+
+        class VrmAnimationApp {
+            constructor() {
+                this.scene = new THREE.Scene();
+                this.scene.background = new THREE.Color(0x1d222c);
+
+                this.clock = new THREE.Clock();
+                this.actors = [];
+                this.stageMeta = {
+                    selectedSessionId: '',
+                    sessions: [],
+                };
+                this.syncRunning = false;
+                this.syncQueued = false;
+                this.vrmaAnimationCache = new Map();
+                this.actorSeatIndexes = new Map();
+
+                this.raycaster = new THREE.Raycaster();
+                this.pointer = new THREE.Vector2();
+
+                this.MAX_ACTORS = 5;
+                this.VRM_URL = './AliciaSolid.vrm';
+                this.VRMA_FILES = [
+                    'Angry.vrma',
+                    'Blush.vrma',
+                    'Clapping.vrma',
+                    'Goodbye.vrma',
+                    'Jump.vrma',
+                    'LookAround.vrma',
+                    'Relax.vrma',
+                    'Sad.vrma',
+                    'Sleepy.vrma',
+                    'Surprised.vrma',
+                    'Thinking.vrma',
+                    'SittingDrinking.vrma'
+                ];
+                this.VRMA_BASE_PATH = './vrm-viewer-main/VRMA/';
+                this.DEFAULT_VRMA_FILE = 'LookAround.vrma';
+                this.IDLE_VRMA_FILES = ['LookAround.vrma', 'Relax.vrma', 'Thinking.vrma', 'Surprised.vrma'];
+                this.STATE_VRMA_MAP = {
+                    IDLE: 'LookAround.vrma',
+                    THINKING: 'Thinking.vrma',
+                    TOOLING: 'Clapping.vrma',
+                    RESPONDING: 'Goodbye.vrma',
+                    WAITING: 'Relax.vrma',
+                };
+
+                this.statusEl = document.getElementById('status');
+                this.vrmaListEl = document.getElementById('vrmaList');
+                this.playBtn = document.getElementById('playBtn');
+                this.pauseBtn = document.getElementById('pauseBtn');
+                this.stopBtn = document.getElementById('stopBtn');
+
+                this.renderer = new THREE.WebGLRenderer({ antialias: true });
+                this.renderer.setSize(window.innerWidth, window.innerHeight);
+                this.renderer.setPixelRatio(window.devicePixelRatio);
+                this.renderer.domElement.style.position = 'absolute';
+                this.renderer.domElement.style.inset = '0';
+                document.body.appendChild(this.renderer.domElement);
+
+                this.labelRenderer = new CSS2DRenderer();
+                this.labelRenderer.setSize(window.innerWidth, window.innerHeight);
+                this.labelRenderer.domElement.style.position = 'absolute';
+                this.labelRenderer.domElement.style.inset = '0';
+                this.labelRenderer.domElement.style.pointerEvents = 'none';
+                this.labelRenderer.domElement.style.zIndex = '5';
+                document.body.appendChild(this.labelRenderer.domElement);
+
+                this.camera = new THREE.PerspectiveCamera(30, window.innerWidth / window.innerHeight, 0.1, 30);
+                this.camera.position.set(0, 1.5, 5.2);
+
+                this.controls = new OrbitControls(this.camera, this.renderer.domElement);
+                this.controls.target.set(0, 1.15, 0);
+                this.controls.update();
+
+                const keyLight = new THREE.DirectionalLight(0xffffff, 2.2);
+                keyLight.position.set(1, 2, 1);
+                this.scene.add(keyLight);
+                this.scene.add(new THREE.AmbientLight(0xffffff, 0.62));
+                this.scene.add(new THREE.GridHelper(8, 8));
+
+                this.loader = new GLTFLoader();
+                this.loader.register((parser) => new VRMLoaderPlugin(parser));
+                this.loader.register((parser) => new VRMAnimationLoaderPlugin(parser));
+
+                this.bindEvents();
+                this.renderVrmaButtons();
+                this.run();
+                this.startIdleMotionTicker();
+            }
+
+            bindEvents() {
+                this.playBtn.addEventListener('click', () => this.playAll());
+                this.pauseBtn.addEventListener('click', () => this.pauseToggleAll());
+                this.stopBtn.addEventListener('click', () => this.stopAll());
+
+                window.addEventListener('resize', () => {
+                    this.camera.aspect = window.innerWidth / window.innerHeight;
+                    this.camera.updateProjectionMatrix();
+                    this.renderer.setSize(window.innerWidth, window.innerHeight);
+                    this.labelRenderer.setSize(window.innerWidth, window.innerHeight);
+                });
+
+                this.renderer.domElement.addEventListener('pointerdown', (event) => {
+                    const actor = this.pickActorByRay(event.clientX, event.clientY);
+                    if (!actor) return;
+                    window.parent.postMessage({
+                        type: 'vrm-character-click',
+                        sessionId: actor.sessionId,
+                    }, window.location.origin);
+                });
+
+                window.addEventListener('message', (event) => {
+                    if (event.origin !== window.location.origin) return;
+                    const data = event.data || {};
+                    if (data.type !== 'session-stage-meta') return;
+                    this.setStageMeta(data);
+                });
+            }
+
+            renderVrmaButtons() {
+                this.VRMA_FILES.forEach((fileName) => {
+                    const btn = document.createElement('button');
+                    btn.textContent = fileName.replace('.vrma', '');
+                    btn.disabled = true;
+                    btn.addEventListener('click', async () => {
+                        await Promise.all(this.actors.map((actor) => this.playActorMotion(actor, fileName, true)));
+                    });
+                    this.vrmaListEl.appendChild(btn);
+                });
+            }
+
+            setStatus(message) {
+                this.statusEl.textContent = message;
+            }
+
+            setControlAvailability() {
+                const hasActor = this.actors.length > 0;
+                const listButtons = this.vrmaListEl.querySelectorAll('button');
+                listButtons.forEach((button) => {
+                    button.disabled = !hasActor;
+                });
+                this.playBtn.disabled = !hasActor;
+                this.pauseBtn.disabled = !hasActor;
+                this.stopBtn.disabled = !hasActor;
+            }
+
+            setStageMeta(payload) {
+                this.stageMeta = {
+                    selectedSessionId: String(payload.selectedSessionId || ''),
+                    sessions: Array.isArray(payload.sessions)
+                        ? payload.sessions.map((item) => ({
+                            session_id: String(item.session_id || ''),
+                            display_name: String(item.display_name || ''),
+                            state: String(item.state || 'IDLE').toUpperCase(),
+                        }))
+                        : [],
+                };
+                this.scheduleSync();
+            }
+
+            scheduleSync() {
+                if (this.syncRunning) {
+                    this.syncQueued = true;
+                    return;
+                }
+                void this.syncActorsWithStageMeta();
+            }
+
+            async syncActorsWithStageMeta() {
+                this.syncRunning = true;
+                try {
+                    const targetSessions = this.stageMeta.sessions.slice(0, this.MAX_ACTORS);
+                    const targetIds = new Set(targetSessions.map((item) => item.session_id));
+
+                    const removed = this.actors.filter((actor) => !targetIds.has(actor.sessionId));
+                    for (const actor of removed) {
+                        await this.removeActor(actor);
+                    }
+
+                    for (const session of targetSessions) {
+                        let actor = this.findActorBySessionId(session.session_id);
+                        if (!actor) {
+                            actor = await this.createActor(session);
+                        } else {
+                            const stateChanged = actor.state !== session.state;
+                            actor.displayName = session.display_name;
+                            actor.state = session.state;
+                            this.updateActorHeadLabel(actor);
+                            if (stateChanged && actor.state !== 'IDLE') {
+                                await this.playMotionForState(actor, true);
+                            }
+                        }
+                    }
+
+                    this.updateAllHeadLabels();
+                    this.setControlAvailability();
+                    this.setStatus(`場上角色：${this.actors.length}/${this.MAX_ACTORS}`);
+                } catch (error) {
+                    console.error(error);
+                    this.setStatus(`同步角色失敗: ${String(error?.message || error)}`);
+                } finally {
+                    this.syncRunning = false;
+                    if (this.syncQueued) {
+                        this.syncQueued = false;
+                        void this.syncActorsWithStageMeta();
+                    }
+                }
+            }
+
+            findActorBySessionId(sessionId) {
+                return this.actors.find((item) => item.sessionId === sessionId) || null;
+            }
+
+            async createActor(session) {
+                const vrm = await this.loadVrmInstance(this.VRM_URL);
+                const mixer = new THREE.AnimationMixer(vrm.scene);
+
+                const root = new THREE.Group();
+                root.name = `session-${session.session_id}`;
+                root.userData.sessionId = session.session_id;
+                root.add(vrm.scene);
+                this.scene.add(root);
+
+                const actor = {
+                    sessionId: session.session_id,
+                    displayName: session.display_name,
+                    state: session.state,
+                    vrm,
+                    mixer,
+                    root,
+                    targetPosition: new THREE.Vector3(),
+                    currentAction: null,
+                    currentMotionFile: '',
+                    labelRoot: null,
+                    labelTitleEl: null,
+                    labelStateEl: null,
+                    headAnchor: null,
+                    seatIndex: -1,
+                };
+
+                this.setupActorHeadLabel(actor);
+                this.assignSeatToActor(actor, true);
+                this.actors.push(actor);
+                await this.playMotionForState(actor, true);
+                return actor;
+            }
+
+            async removeActor(actor) {
+                const idx = this.actors.findIndex((item) => item.sessionId === actor.sessionId);
+                if (idx >= 0) {
+                    this.actors.splice(idx, 1);
+                }
+                this.actorSeatIndexes.delete(actor.sessionId);
+                if (actor.currentAction) {
+                    actor.currentAction.stop();
+                }
+                this.scene.remove(actor.root);
+                actor.vrm.dispose?.();
+            }
+
+            setupActorHeadLabel(actor) {
+                const labelRoot = document.createElement('div');
+                labelRoot.className = 'session-head-label state-idle';
+
+                const titleEl = document.createElement('div');
+                titleEl.className = 'title';
+                titleEl.textContent = actor.displayName;
+
+                const stateEl = document.createElement('div');
+                stateEl.className = 'state';
+                stateEl.textContent = this.stateText(actor.state);
+
+                labelRoot.appendChild(titleEl);
+                labelRoot.appendChild(stateEl);
+
+                const headBone = actor.vrm.humanoid?.getNormalizedBoneNode?.('head')
+                    || actor.vrm.humanoid?.getNormalizedBoneNode?.('neck')
+                    || actor.vrm.humanoid?.getNormalizedBoneNode?.('chest')
+                    || actor.vrm.scene;
+
+                const headAnchor = new THREE.Object3D();
+                headAnchor.position.set(0, 0.34, 0);
+                headBone.add(headAnchor);
+
+                const label = new CSS2DObject(labelRoot);
+                headAnchor.add(label);
+
+                actor.headAnchor = headAnchor;
+                actor.labelRoot = labelRoot;
+                actor.labelTitleEl = titleEl;
+                actor.labelStateEl = stateEl;
+                this.updateActorHeadLabel(actor);
+            }
+
+            updateAllHeadLabels() {
+                for (const actor of this.actors) {
+                    this.updateActorHeadLabel(actor);
+                }
+            }
+
+            updateActorHeadLabel(actor) {
+                if (!actor.labelRoot || !actor.labelTitleEl || !actor.labelStateEl) return;
+                const stateClass = `state-${String(actor.state || 'IDLE').toLowerCase()}`;
+                const selectedClass = this.stageMeta.selectedSessionId === actor.sessionId ? ' selected' : '';
+                actor.labelRoot.className = `session-head-label ${stateClass}${selectedClass}`;
+                actor.labelTitleEl.textContent = actor.displayName || actor.sessionId.slice(0, 8);
+                actor.labelStateEl.textContent = this.stateText(actor.state);
+            }
+
+            stateText(state) {
+                const map = {
+                    IDLE: '待命',
+                    THINKING: '思考中',
+                    TOOLING: '工具中',
+                    RESPONDING: '回答中',
+                    WAITING: '等待輸入',
+                };
+                return map[String(state || 'IDLE').toUpperCase()] || String(state || 'IDLE');
+            }
+
+            async loadVrmInstance(url) {
+                const gltf = await this.loadGltf(url);
+                const vrm = gltf.userData.vrm;
+                if (!vrm) {
+                    throw new Error('未取得 VRM 物件');
+                }
+                VRMUtils.rotateVRM0(vrm);
+                VRMUtils.removeUnnecessaryVertices(vrm.scene);
+                VRMUtils.combineSkeletons(vrm.scene);
+                return vrm;
+            }
+
+            async loadVrmaAnimation(fileName) {
+                if (this.vrmaAnimationCache.has(fileName)) {
+                    return this.vrmaAnimationCache.get(fileName);
+                }
+                const url = `${this.VRMA_BASE_PATH}${fileName}`;
+                const gltf = await this.loadGltf(url);
+                const vrmAnimation = gltf.userData.vrmAnimations?.[0];
+                if (!vrmAnimation) {
+                    throw new Error(`${fileName} 缺少 VRMAnimation`);
+                }
+                this.vrmaAnimationCache.set(fileName, vrmAnimation);
+                return vrmAnimation;
+            }
+
+            pickRandomIdleMotion(currentFile) {
+                const candidates = this.IDLE_VRMA_FILES.filter((item) => item !== currentFile);
+                if (!candidates.length) return this.DEFAULT_VRMA_FILE;
+                const idx = Math.floor(Math.random() * candidates.length);
+                return candidates[idx];
+            }
+
+            async playMotionForState(actor, force = false) {
+                const stateKey = String(actor.state || 'IDLE').toUpperCase();
+                const targetFile = stateKey === 'IDLE'
+                    ? this.pickRandomIdleMotion(actor.currentMotionFile)
+                    : (this.STATE_VRMA_MAP[stateKey] || this.DEFAULT_VRMA_FILE);
+                await this.playActorMotion(actor, targetFile, force);
+            }
+
+            async playActorMotion(actor, fileName, force = false) {
+                if (!force && actor.currentMotionFile === fileName) {
+                    return;
+                }
+                const vrmAnimation = await this.loadVrmaAnimation(fileName);
+                const clip = createVRMAnimationClip(vrmAnimation, actor.vrm);
+                if (!clip) {
+                    throw new Error(`${fileName} 轉換 AnimationClip 失敗`);
+                }
+
+                if (actor.currentAction) {
+                    actor.currentAction.fadeOut(0.15);
+                }
+                const action = actor.mixer.clipAction(clip);
+                action.reset();
+                action.setLoop(THREE.LoopRepeat, Infinity);
+                action.fadeIn(0.2);
+                action.play();
+
+                actor.currentAction = action;
+                actor.currentMotionFile = fileName;
+            }
+
+            getSeatPositions() {
+                return [
+                    new THREE.Vector3(-2.15, 0, 0.65),
+                    new THREE.Vector3(-1.05, 0, 0.15),
+                    new THREE.Vector3(0, 0, -0.08),
+                    new THREE.Vector3(1.05, 0, 0.15),
+                    new THREE.Vector3(2.15, 0, 0.65),
+                ];
+            }
+
+            pickRandom(items) {
+                if (!items.length) return null;
+                const idx = Math.floor(Math.random() * items.length);
+                return items[idx];
+            }
+
+            getAvailableSeatIndexes() {
+                const seats = this.getSeatPositions();
+                const allIndexes = seats.map((_, idx) => idx);
+                const used = new Set(this.actorSeatIndexes.values());
+                return allIndexes.filter((idx) => !used.has(idx));
+            }
+
+            assignSeatToActor(actor, setInitialPosition = false) {
+                const seats = this.getSeatPositions();
+                let seatIndex = this.actorSeatIndexes.get(actor.sessionId);
+                if (typeof seatIndex !== 'number' || seatIndex < 0 || seatIndex >= seats.length) {
+                    const available = this.getAvailableSeatIndexes();
+                    const picked = this.pickRandom(available);
+                    seatIndex = picked === null ? 2 : picked;
+                    this.actorSeatIndexes.set(actor.sessionId, seatIndex);
+                }
+                actor.seatIndex = seatIndex;
+                actor.targetPosition.copy(seats[seatIndex]);
+                if (setInitialPosition) {
+                    actor.root.position.copy(actor.targetPosition);
+                }
+            }
+
+            async randomizeIdleMotions() {
+                const idleActors = this.actors.filter((actor) => actor.state === 'IDLE');
+                if (!idleActors.length) return;
+                await Promise.all(idleActors.map((actor) => this.playMotionForState(actor, true)));
+            }
+
+            startIdleMotionTicker() {
+                window.setInterval(() => {
+                    void this.randomizeIdleMotions();
+                }, 9000);
+            }
+
+            playAll() {
+                for (const actor of this.actors) {
+                    actor.currentAction?.play();
+                    actor.currentAction.paused = false;
+                }
+            }
+
+            pauseToggleAll() {
+                for (const actor of this.actors) {
+                    if (!actor.currentAction) continue;
+                    actor.currentAction.paused = !actor.currentAction.paused;
+                }
+            }
+
+            stopAll() {
+                for (const actor of this.actors) {
+                    if (!actor.currentAction) continue;
+                    actor.currentAction.stop();
+                    actor.currentAction = null;
+                    actor.vrm.humanoid.resetPose();
+                }
+            }
+
+            pickActorByRay(clientX, clientY) {
+                if (!this.actors.length) return null;
+                const rect = this.renderer.domElement.getBoundingClientRect();
+                const x = ((clientX - rect.left) / rect.width) * 2 - 1;
+                const y = -((clientY - rect.top) / rect.height) * 2 + 1;
+                this.pointer.set(x, y);
+                this.raycaster.setFromCamera(this.pointer, this.camera);
+                const intersections = this.raycaster.intersectObjects(this.actors.map((actor) => actor.root), true);
+                if (!intersections.length) return null;
+                for (const hit of intersections) {
+                    let target = hit.object;
+                    while (target) {
+                        const actor = this.actors.find((item) => item.root === target);
+                        if (actor) return actor;
+                        target = target.parent;
+                    }
+                }
+                return null;
+            }
+
+            loadGltf(url) {
+                return new Promise((resolve, reject) => {
+                    this.loader.load(
+                        url,
+                        (gltf) => resolve(gltf),
+                        undefined,
+                        (error) => reject(error)
+                    );
+                });
+            }
+
+            run() {
+                const tick = () => {
+                    requestAnimationFrame(tick);
+                    const delta = this.clock.getDelta();
+                    for (const actor of this.actors) {
+                        actor.vrm.update(delta);
+                        actor.mixer.update(delta);
+                        actor.root.position.lerp(actor.targetPosition, 0.1);
+                    }
+                    this.controls.update();
+                    this.renderer.render(this.scene, this.camera);
+                    this.labelRenderer.render(this.scene, this.camera);
+                };
+                tick();
+            }
+        }
+
+        const app = new VrmAnimationApp();
+        app.setStatus('等待 Session 資料...');
+
+    </script>
+</body>
+</html>
