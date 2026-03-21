@@ -202,6 +202,8 @@ export function useVrmStage(options: UseVrmStageOptions) {
   const actorSeatIndexes = new Map<string, number>()
   const vrmaAnimationCache = new Map<string, VRMAnimation>()
   let actorMountSequence = 0
+  let syncActorsRunning = false
+  let syncActorsPending = false
 
   function stateText(state: SessionState): string {
     const normalized = String(state || 'IDLE').toUpperCase() as SessionState
@@ -843,7 +845,7 @@ export function useVrmStage(options: UseVrmStageOptions) {
     optionsOnCharacterClick: options.onCharacterClick,
     pickActorByRay: (x, y) => pickActorByRay(x, y),
     setLoadingText,
-    ensureSessionOnStage,
+    ensureSessionOnStage: ensureSessionOnStageSerialized,
     updateAllHeadLabels,
     getActorsLength: () => actors.length,
     pickInteractionPointByRay,
@@ -1258,6 +1260,23 @@ export function useVrmStage(options: UseVrmStageOptions) {
   }
 
   async function syncActorsWithSessions(): Promise<void> {
+    if (syncActorsRunning) {
+      syncActorsPending = true
+      return
+    }
+    syncActorsRunning = true
+    try {
+      await syncActorsWithSessionsCore()
+    } finally {
+      syncActorsRunning = false
+      if (syncActorsPending) {
+        syncActorsPending = false
+        void syncActorsWithSessions()
+      }
+    }
+  }
+
+  async function syncActorsWithSessionsCore(): Promise<void> {
     const targetSessions = options.visibleSessions.value.slice(0, MAX_ACTORS)
     const targetIdSet = new Set(targetSessions.map((item) => item.session_id))
 
@@ -1311,6 +1330,23 @@ export function useVrmStage(options: UseVrmStageOptions) {
 
     updateAllHeadLabels()
     setLoadingText(actors.length ? '' : '等待 Session 資料...')
+  }
+
+  async function ensureSessionOnStageSerialized(session: SessionSnapshotItem, triggerJump = false): Promise<void> {
+    if (syncActorsRunning) {
+      syncActorsPending = true
+      return
+    }
+    syncActorsRunning = true
+    try {
+      await ensureSessionOnStage(session, triggerJump)
+    } finally {
+      syncActorsRunning = false
+      if (syncActorsPending) {
+        syncActorsPending = false
+        void syncActorsWithSessions()
+      }
+    }
   }
 
   function pickActorByRay(clientX: number, clientY: number): VrmActor | null {
