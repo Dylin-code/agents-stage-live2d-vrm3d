@@ -226,6 +226,69 @@ npm run dev
 - FBX 轉 VRMA 工具：
   - [tk256ailab/fbx2vrma-converter](https://github.com/tk256ailab/fbx2vrma-converter)
 
+## 更新紀錄
+
+### 2026-03-22：Remote Mode — 遠端登入與 Google OAuth2 認證
+
+新增 remote mode，讓你可以透過 Cloudflare Tunnel、ngrok 等方式從外部安全存取本專案，不再限於本機使用。
+
+#### 新增功能
+
+- **`--mode local|remote` 啟動旗標**：後端新增模式切換，`local`（預設）行為完全不變，`remote` 模式會啟用認證閘道
+- **Google OAuth2 登入**：透過 `fastapi-sso` 整合 Google 登入，使用者以 Google 帳號認證後取得 JWT HttpOnly cookie
+- **Email 白名單**：僅允許 `config.json` 中 `allowed_emails` 清單內的信箱登入
+- **Auth Guard Middleware**：remote 模式下所有 API 與頁面皆受 JWT 驗證保護，未登入自動導向 `/login`
+- **WebSocket 認證**：WebSocket handshake 時同樣檢查 JWT cookie
+- **前端 Login 頁面與 Router Guard**：新增 `/login` 頁面與前端路由守衛，未認證時自動跳轉
+- **Makefile `dev-remote` target**：一鍵以 remote 模式啟動
+
+#### 設定方式
+
+1. **Google Cloud Console 設定 OAuth2**
+   - 前往 [Google Cloud Console](https://console.cloud.google.com/) 建立或選擇專案
+   - 啟用 OAuth consent screen，設定應用程式名稱與授權網域
+   - 建立 OAuth 2.0 Client ID（Web application 類型）
+   - 在「Authorized redirect URIs」加入：`{your_origin}/api/auth/callback`（例如 `https://agents-stage.your-domain.com/api/auth/callback`）
+   - 記下 `Client ID` 與 `Client Secret`
+
+2. **建立 `config.json`**（參考 `config.example.json`）
+
+   ```json
+   {
+     "remote": {
+       "google_client_id": "YOUR_CLIENT_ID.apps.googleusercontent.com",
+       "google_client_secret": "GOCSPX-YOUR_SECRET",
+       "jwt_secret": "",
+       "allowed_emails": ["your-email@gmail.com"],
+       "allowed_origin": "https://agents-stage.your-domain.com",
+       "cookie_max_age": 86400
+     }
+   }
+   ```
+
+   - `jwt_secret`：留空會自動產生隨機 secret（每次重啟會失效，建議自行填入固定值）
+   - `allowed_emails`：Email 白名單，僅清單中的 Google 帳號可登入
+   - `allowed_origin`：你的外部存取網域
+
+3. **啟動 remote 模式**
+
+   ```bash
+   make dev-remote
+   ```
+
+   或手動：
+
+   ```bash
+   cd agents-stage-live2d-vrm3d-server
+   .venv/bin/python main.py --mode remote --host 0.0.0.0 --port 8000 --static-path ../agents-stage-live2d-vrm3d-fe/dist
+   ```
+
+#### 注意事項
+
+- Remote 模式下前端需先 build（`npm run build`），由 FastAPI 提供靜態檔案，確保 same-origin 避免 CORS 問題
+- 本功能設計為單人單機使用，不包含多使用者隔離機制
+- Local 模式完全不受影響，無需任何設定即可照常使用
+
 ## 版權與素材聲明
 
 本專案雖然包含部分 2D / 3D 模型與相關範例資源，但這些資源均取自公開可取得的資源網站，僅供本專案測試、研究與功能驗證用途。
