@@ -610,7 +610,7 @@ class SessionBridgeServiceTest(unittest.IsolatedAsyncioTestCase):
         snapshot = await self.service.get_snapshot()
         self.assertEqual(snapshot["sessions"], [])
 
-    async def test_claude_assistant_end_turn_maps_to_waiting(self) -> None:
+    async def test_claude_assistant_end_turn_maps_to_idle(self) -> None:
         session_id = "00000000-0000-0000-0000-000000000018"
         now = _now_iso()
         with TemporaryDirectory() as temp_dir:
@@ -636,7 +636,96 @@ class SessionBridgeServiceTest(unittest.IsolatedAsyncioTestCase):
             await self.service._ingest_claude_line(line, cursor)
         snapshot = await self.service.get_snapshot()
         self.assertEqual(len(snapshot["sessions"]), 1)
-        self.assertEqual(snapshot["sessions"][0]["state"], "WAITING")
+        self.assertEqual(snapshot["sessions"][0]["state"], "IDLE")
+
+    async def test_claude_assistant_thinking_block_maps_to_thinking(self) -> None:
+        session_id = "00000000-0000-0000-0000-00000000001a"
+        now = _now_iso()
+        with TemporaryDirectory() as temp_dir:
+            cursor = _FileCursor(
+                path=Path(temp_dir) / f"{session_id}.jsonl",
+                offset=0,
+                inode=1,
+                session_id=session_id,
+            )
+            line = json.dumps(
+                {
+                    "type": "assistant",
+                    "sessionId": session_id,
+                    "timestamp": now,
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "thinking", "thinking": "先分析目前狀況"}],
+                        "stop_reason": None,
+                    },
+                },
+                ensure_ascii=False,
+            )
+            await self.service._ingest_claude_line(line, cursor)
+        snapshot = await self.service.get_snapshot()
+        self.assertEqual(len(snapshot["sessions"]), 1)
+        self.assertEqual(snapshot["sessions"][0]["state"], "THINKING")
+
+    async def test_claude_assistant_tool_use_maps_to_tooling(self) -> None:
+        session_id = "00000000-0000-0000-0000-00000000001b"
+        now = _now_iso()
+        with TemporaryDirectory() as temp_dir:
+            cursor = _FileCursor(
+                path=Path(temp_dir) / f"{session_id}.jsonl",
+                offset=0,
+                inode=1,
+                session_id=session_id,
+            )
+            line = json.dumps(
+                {
+                    "type": "assistant",
+                    "sessionId": session_id,
+                    "timestamp": now,
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "thinking", "thinking": "我要先查專案"},
+                            {"type": "tool_use", "name": "Bash", "id": "tool-1", "input": {"command": "pwd"}},
+                        ],
+                    },
+                },
+                ensure_ascii=False,
+            )
+            await self.service._ingest_claude_line(line, cursor)
+        snapshot = await self.service.get_snapshot()
+        self.assertEqual(len(snapshot["sessions"]), 1)
+        self.assertEqual(snapshot["sessions"][0]["state"], "TOOLING")
+
+    async def test_claude_assistant_text_without_stop_reason_maps_to_responding(self) -> None:
+        session_id = "00000000-0000-0000-0000-00000000001c"
+        now = _now_iso()
+        with TemporaryDirectory() as temp_dir:
+            cursor = _FileCursor(
+                path=Path(temp_dir) / f"{session_id}.jsonl",
+                offset=0,
+                inode=1,
+                session_id=session_id,
+            )
+            line = json.dumps(
+                {
+                    "type": "assistant",
+                    "sessionId": session_id,
+                    "timestamp": now,
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "thinking", "thinking": "整理答案"},
+                            {"type": "text", "text": "我先幫你檢查後端映射"},
+                        ],
+                        "stop_reason": None,
+                    },
+                },
+                ensure_ascii=False,
+            )
+            await self.service._ingest_claude_line(line, cursor)
+        snapshot = await self.service.get_snapshot()
+        self.assertEqual(len(snapshot["sessions"]), 1)
+        self.assertEqual(snapshot["sessions"][0]["state"], "RESPONDING")
 
     async def test_claude_ask_user_question_maps_to_waiting(self) -> None:
         session_id = "00000000-0000-0000-0000-000000000019"

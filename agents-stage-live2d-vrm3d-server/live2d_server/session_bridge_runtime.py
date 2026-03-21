@@ -50,6 +50,56 @@ def _event_timestamp_or_none(event: dict[str, Any]) -> tuple[str, float] | None:
         return None
     return timestamp, event_epoch
 
+
+def _classify_claude_assistant_message(message: dict[str, Any]) -> tuple[str, str]:
+    """Map Claude assistant message blocks to a session state and event type."""
+    content = message.get("content")
+    has_tool_use = False
+    has_waiting_tool = False
+    has_thinking = False
+    has_text = False
+
+    if isinstance(content, list):
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            item_type = str(item.get("type") or "").strip().lower()
+            if item_type == "tool_use":
+                has_tool_use = True
+                tool_name = str(item.get("name") or "").strip().lower()
+                if tool_name in {"askuserquestion", "request_user_input"}:
+                    has_waiting_tool = True
+                continue
+            if item_type == "thinking":
+                thinking_text = str(item.get("thinking") or item.get("text") or "").strip()
+                if thinking_text:
+                    has_thinking = True
+                continue
+            if item_type == "text":
+                text_value = str(item.get("text") or "").strip()
+                if text_value:
+                    has_text = True
+                continue
+
+    if has_tool_use:
+        if has_waiting_tool:
+            return "WAITING", "request_user_input"
+        return "TOOLING", "agent_tool_call_begin"
+
+    stop_reason = str(message.get("stop_reason") or "").strip().lower()
+    if has_text:
+        if stop_reason in {"end_turn", "stop_sequence"}:
+            return "IDLE", "assistant_message"
+        return "RESPONDING", "assistant_message"
+
+    if has_thinking:
+        return "THINKING", "agent_reasoning"
+
+    if stop_reason in {"end_turn", "stop_sequence"}:
+        return "IDLE", "assistant_message"
+
+    return "RESPONDING", "assistant_message"
+
 class SessionBridgeService:
     """Bridge Codex and Claude local JSONL events into websocket session-state events."""
 
@@ -1014,7 +1064,6 @@ class SessionBridgeService:
                 session.state = "THINKING"
 
             elif event_type == "assistant":
-                session.last_event_type = "assistant_message"
                 # Check for model info in message
                 model = str(message.get("model") or "").strip()
                 if model:
@@ -1038,35 +1087,9 @@ class SessionBridgeService:
                             session.total_tokens = total
                     except (ValueError, TypeError):
                         pass
-                # Check content array for tool_use blocks → TOOLING state.
-                content = message.get("content")
-                has_tool_use = False
-                has_waiting_tool = False
-                if isinstance(content, list):
-                    for c in content:
-                        if not isinstance(c, dict):
-                            continue
-                        if c.get("type") != "tool_use":
-                            continue
-                        has_tool_use = True
-                        tool_name = str(c.get("name") or "").strip().lower()
-                        if tool_name in {"askuserquestion", "request_user_input"}:
-                            has_waiting_tool = True
-                if has_tool_use:
-                    if has_waiting_tool:
-                        session.state = "WAITING"
-                        session.last_event_type = "request_user_input"
-                    else:
-                        session.state = "TOOLING"
-                        session.last_event_type = "agent_tool_call_begin"
-                else:
-                    stop_reason = str(
-                        message.get("stop_reason") or event.get("stop_reason") or ""
-                    ).strip().lower()
-                    if stop_reason in {"end_turn", "stop_sequence"}:
-                        session.state = "WAITING"
-                    else:
-                        session.state = "RESPONDING"
+                assistant_state, assistant_event_type = _classify_claude_assistant_message(message)
+                session.state = assistant_state
+                session.last_event_type = assistant_event_type
 
             elif event_type == "tool_result":
                 session.last_event_type = "agent_tool_call_finish"
