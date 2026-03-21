@@ -48,3 +48,6 @@ mcp_servers/
 /.codex/
 .idea/
 *.ipynb
+
+# Remote mode config (contains OAuth secrets)
+config.json

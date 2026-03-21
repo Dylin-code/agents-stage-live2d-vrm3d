@@ -1,4 +1,6 @@
-const DEFAULT_SERVER_URL = 'http://127.0.0.1:8000'
+import { getDefaultServerUrl } from '../serverUrl'
+
+const DEFAULT_SERVER_URL = getDefaultServerUrl()
 const LOCAL_SELECT_DIRECTORY_PATH = '/api/local/select-directory'
 
 function trimTrailingSlash(value: string): string {

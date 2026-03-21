@@ -20,6 +20,15 @@ class ServerConfig(BaseModel):
     mcp_servers: List[MCPServerConfig] = []
     llm: LLMConfig | None = None
     
+class RemoteConfig(BaseModel):
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    jwt_secret: str = ""
+    allowed_emails: List[str] = []
+    allowed_origin: str = ""
+    cookie_max_age: int = 86400  # 24 hours
+
 class Config(BaseModel):
     debug: bool = False
     server: ServerConfig = ServerConfig()
+    remote: RemoteConfig = RemoteConfig()

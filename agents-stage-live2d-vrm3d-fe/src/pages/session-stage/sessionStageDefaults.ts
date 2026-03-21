@@ -1,10 +1,11 @@
 import type { SystemSettings } from '../../types/message'
+import { getDefaultBridgeWsUrl, getDefaultServerUrl } from '../../utils/serverUrl'
 
 export function buildDefaultSystemSettings(): SystemSettings {
   return {
-    serverUrl: 'http://127.0.0.1:8000',
+    serverUrl: getDefaultServerUrl(),
     sessionStage: {
-      bridgeUrl: 'ws://127.0.0.1:8000/api/session-bridge/ws',
+      bridgeUrl: getDefaultBridgeWsUrl(),
       modelPaths: 'assets/models/Senko_Normals/senko.model3.json',
     },
     backgroundPath: 'assets/background.jpg',

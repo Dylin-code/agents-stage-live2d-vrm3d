@@ -31,6 +31,7 @@ import { deriveStableVrm3dVisibleSessionIds } from './vrmVisibleSessionOrder'
 import { createSessionStageActorRuntime } from './sessionStageActorRuntime'
 import { createSessionStageChatAgentUtils, type SessionAgentUiOptions } from './sessionStageChatAgentUtils'
 import type { OpenSessionChatOptions } from './sessionStageChatAgentUtils'
+import { getDefaultBridgeWsUrl, getDefaultServerUrl } from '../../utils/serverUrl'
 import { buildDefaultSystemSettings } from './sessionStageDefaults'
 import { createSessionStageModelCatalogUtils } from './sessionStageModelCatalogUtils'
 import {
@@ -94,8 +95,8 @@ let reconnectAttempt = 0
 let disposed = false
 let lastVisibilitySyncMs = 0
 
-let serverUrl = 'http://127.0.0.1:8000'
-let bridgeUrl = 'ws://127.0.0.1:8000/api/session-bridge/ws'
+let serverUrl = getDefaultServerUrl()
+let bridgeUrl = getDefaultBridgeWsUrl()
 let modelPaths: string[] = ['assets/models/Senko_Normals/senko.model3.json']
 let modelScale = 0.28
 const modelMotionsByPath = new Map<string, ModelMotionEntry[]>()

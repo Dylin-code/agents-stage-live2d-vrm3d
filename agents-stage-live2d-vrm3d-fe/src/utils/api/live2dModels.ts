@@ -18,7 +18,7 @@ function trimTrailingSlash(value: string): string {
 }
 
 export async function fetchLive2DModels(serverUrl: string): Promise<Live2DModelListResponse> {
-  const base = trimTrailingSlash(serverUrl || 'http://127.0.0.1:8000')
+  const base = trimTrailingSlash(serverUrl || '')
   const resp = await fetch(`${base}/api/live2d/models`, { method: 'GET' })
   if (!resp.ok) {
     throw new Error(`failed to fetch live2d models: ${resp.status}`)

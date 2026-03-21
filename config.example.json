@@ -1,0 +1,10 @@
+{
+  "remote": {
+    "google_client_id": "YOUR_CLIENT_ID.apps.googleusercontent.com",
+    "google_client_secret": "GOCSPX-YOUR_SECRET",
+    "jwt_secret": "",
+    "allowed_emails": ["your-email@gmail.com"],
+    "allowed_origin": "https://agents-stage.your-domain.com",
+    "cookie_max_age": 86400
+  }
+}

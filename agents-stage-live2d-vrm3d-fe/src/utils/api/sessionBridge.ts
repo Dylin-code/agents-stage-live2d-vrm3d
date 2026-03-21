@@ -1,6 +1,8 @@
 import type { AgentBrand, SessionConversationResponse, SessionHistoryResponse, SessionSnapshotResponse } from '../../types/sessionState'
 
-const DEFAULT_SERVER_URL = 'http://127.0.0.1:8000'
+import { getDefaultServerUrl } from '../serverUrl'
+
+const DEFAULT_SERVER_URL = getDefaultServerUrl()
 const SNAPSHOT_PATH = '/api/session-bridge/snapshot'
 const HISTORY_PATH = '/api/session-bridge/history'
 const CONVERSATION_PATH = '/api/session-bridge/conversation'

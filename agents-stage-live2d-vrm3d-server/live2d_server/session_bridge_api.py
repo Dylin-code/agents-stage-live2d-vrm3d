@@ -636,6 +636,13 @@ async def bridge_git_switch(request: GitBranchSwitchRequest) -> dict[str, Any]:
 
 @router.websocket("/ws")
 async def bridge_ws(websocket: WebSocket) -> None:
+    # Remote mode: verify JWT cookie before accepting
+    app = websocket.app
+    if getattr(app.state, "mode", "local") == "remote":
+        from .auth import verify_ws_auth
+        if not await verify_ws_auth(websocket, app.state.remote_config):
+            return
+
     await websocket.accept()
     await bridge_service.register_ws_client(websocket)
     try:

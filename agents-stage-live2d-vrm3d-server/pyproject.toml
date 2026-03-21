@@ -35,6 +35,8 @@ dependencies = [
     "transformers",
     "docx2txt",
     "rapidocr-onnxruntime>=1.4.4",
+    "python-jose[cryptography]>=3.3.0",
+    "fastapi-sso>=0.16.0",
 ]
 
 [dependency-groups]
