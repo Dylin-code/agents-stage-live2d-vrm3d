@@ -834,6 +834,16 @@ export function useVrmStage(options: UseVrmStageOptions) {
     return point ? point.clone() : null
   }
 
+  /** Play a random pause animation on the actor (body tap interaction). */
+  function triggerActorRandomMotion(sessionId: string): void {
+    const actor = actors.find((a) => a.sessionId === sessionId)
+    if (!actor) return
+    const randomFile = ROAM_PAUSE_VRMA_FILES[Math.floor(Math.random() * ROAM_PAUSE_VRMA_FILES.length)]
+    playActorMotion(actor, randomFile, { force: true, loop: 'once' }).catch((err) => {
+      console.warn('triggerActorRandomMotion failed', err)
+    })
+  }
+
   const { onPointerDown, onKeyDown, onResize, handleSidebarSessionClick } = createVrmInteractionHandlers({
     interactionEditorEnabled,
     toggleInteractionEditor: setInteractionEditorEnabled,
@@ -843,6 +853,7 @@ export function useVrmStage(options: UseVrmStageOptions) {
     getContainer: () => options.containerRef.value,
     maxDevicePixelRatio: MAX_DEVICE_PIXEL_RATIO,
     optionsOnCharacterClick: options.onCharacterClick,
+    onCharacterBodyClick: triggerActorRandomMotion,
     pickActorByRay: (x, y) => pickActorByRay(x, y),
     setLoadingText,
     ensureSessionOnStage: ensureSessionOnStageSerialized,

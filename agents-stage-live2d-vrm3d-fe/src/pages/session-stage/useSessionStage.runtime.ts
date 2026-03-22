@@ -38,6 +38,7 @@ import {
   normalizeMotionToken,
   type ModelMotionEntry,
 } from './live2dMotionUtils'
+import { usePortraitMode } from './usePortraitMode'
 
 Live2DModelCubism4.registerTicker(PIXI.Ticker)
 Live2DModelCubism2.registerTicker(PIXI.Ticker)
@@ -176,6 +177,9 @@ const activitySortedCandidateSessions = computed(() => {
 
 const vrm3dVisibleSessionIds = ref<string[]>([])
 
+const totalPortraitSessions = computed(() => activitySortedCandidateSessions.value.length)
+const portrait = usePortraitMode(totalPortraitSessions)
+
 const visibleSessions = computed(() => {
   const candidates = activitySortedCandidateSessions.value
   if (!isLive2DRenderer) {
@@ -184,6 +188,13 @@ const visibleSessions = computed(() => {
       .map((sessionId) => candidateMap.get(sessionId))
       .filter((session): session is SessionSnapshotItem => !!session)
   }
+
+  // Portrait mode: show only 1 session at a time
+  if (portrait.isPortraitMode.value && candidates.length > 0) {
+    const idx = Math.min(portrait.portraitSessionIndex.value, candidates.length - 1)
+    return [candidates[Math.max(0, idx)]]
+  }
+
   const withLastFallback = candidates.length > 0 ? candidates : candidates.slice(0, 1)
   if (focusChatMode.value && selectedChatSessionId.value) {
     return withLastFallback
@@ -568,6 +579,7 @@ actorRuntime = createSessionStageActorRuntime({
   getSessionSidebarWidth: () => sessionSidebarWidth.value,
   getChatDockWidth: () => chatDockWidth.value,
   getChatDockHeight: () => chatDockHeight.value,
+  isPortraitMode: () => portrait.isPortraitMode.value,
   sessionStore,
   agentOptionsBySession: sessionAgentOptionsBySession,
   actors,
@@ -1088,5 +1100,15 @@ onUnmounted(() => {
     activeChatAgentOptions,
     handleActiveSessionAgentOptionsChange,
     refreshActiveSessionBranches,
+    isPortraitMode: portrait.isPortraitMode,
+    portraitSessionIndex: portrait.portraitSessionIndex,
+    totalPortraitSessions,
+    portraitSidebarVisible: portrait.sidebarVisible,
+    portraitAgentSettingsExpanded: portrait.agentSettingsExpanded,
+    setupPortraitSwipeGesture: portrait.setupSwipeGesture,
+    navigatePortraitToSession: (sessionId: string) => {
+      const idx = activitySortedCandidateSessions.value.findIndex((s) => s.session_id === sessionId)
+      if (idx >= 0) portrait.portraitSessionIndex.value = idx
+    },
   }
 }

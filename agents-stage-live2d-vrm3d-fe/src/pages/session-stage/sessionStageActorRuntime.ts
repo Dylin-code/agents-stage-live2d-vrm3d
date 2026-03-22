@@ -81,6 +81,7 @@ export function createSessionStageActorRuntime(args: {
   getSessionSidebarWidth: () => number
   getChatDockWidth: () => number
   getChatDockHeight: () => number
+  isPortraitMode: () => boolean
   sessionStore: Record<string, SessionSnapshotItem>
   agentOptionsBySession: Record<string, SessionAgentUiOptions>
   actors: Map<string, AvatarActor>
@@ -132,6 +133,7 @@ export function createSessionStageActorRuntime(args: {
     getSessionSidebarWidth,
     getChatDockWidth,
     getChatDockHeight,
+    isPortraitMode,
     sessionStore,
     agentOptionsBySession,
     actors,
@@ -247,7 +249,7 @@ export function createSessionStageActorRuntime(args: {
     const desiredChatReserved = showDesktopRightChat ? Math.max(380, getChatDockWidth() + 28) : 0
     const maxRightReserved = Math.max(0, fullWidth - stageLeftPadding - 220 - sidebarReserved)
     const chatRightReserved = Math.min(desiredChatReserved, maxRightReserved)
-    const chatBottomReserved = isChatModalVisible() && !isDesktop
+    const chatBottomReserved = isChatModalVisible() && !isDesktop && !isPortraitMode()
       ? Math.min(Math.max(260, getChatDockHeight() + 12), Math.floor(fullHeight * 0.58))
       : 0
     const left = stageLeftPadding
@@ -462,12 +464,9 @@ export function createSessionStageActorRuntime(args: {
   }
 
   function handleActorPrimaryInteraction(sessionId: string): void {
-    const now = Date.now()
-    const lastClickAt = lastPrimaryClickAtBySession.get(sessionId) || 0
-    const isDoubleClick = now - lastClickAt <= doubleClickThresholdMs
-    lastPrimaryClickAtBySession.set(sessionId, now)
-    openSessionChat(sessionId)
-    if (isDoubleClick) triggerActorRandomMotion(sessionId)
+    // Click/tap on character body always plays a random motion.
+    // Chat is opened via the overhead status bubble instead.
+    triggerActorRandomMotion(sessionId)
   }
 
   function queueSummonGesture(sessionId: string): void {
@@ -571,6 +570,9 @@ export function createSessionStageActorRuntime(args: {
       bubble.addChild(bubbleText)
       bubble.alpha = 0
       bubble.zIndex = 15
+      bubble.interactive = true
+      bubble.cursor = 'pointer'
+      bubble.on('pointertap', () => openSessionChat(session.session_id))
       liveApp.stage.addChild(bubble)
 
       const contextText = new PIXI.Text('', {

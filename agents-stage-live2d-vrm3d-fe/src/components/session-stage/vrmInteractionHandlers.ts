@@ -10,6 +10,7 @@ export function createVrmInteractionHandlers(args: {
   getContainer: () => HTMLElement | null
   maxDevicePixelRatio: number
   optionsOnCharacterClick: (sessionId: string) => void
+  onCharacterBodyClick: (sessionId: string) => void
   pickActorByRay: (x: number, y: number) => { sessionId: string } | null
   setLoadingText: (text: string) => void
   ensureSessionOnStage: (session: SessionSnapshotItem, triggerJump?: boolean) => Promise<void>
@@ -30,6 +31,7 @@ export function createVrmInteractionHandlers(args: {
     getContainer,
     maxDevicePixelRatio,
     optionsOnCharacterClick,
+    onCharacterBodyClick,
     pickActorByRay,
     setLoadingText,
     ensureSessionOnStage,
@@ -68,7 +70,8 @@ export function createVrmInteractionHandlers(args: {
 
     const actor = pickActorByRay(event.clientX, event.clientY)
     if (!actor) return
-    optionsOnCharacterClick(actor.sessionId)
+    // Click on character body plays a random motion; chat is opened via head label
+    onCharacterBodyClick(actor.sessionId)
   }
 
   function onKeyDown(event: KeyboardEvent): void {

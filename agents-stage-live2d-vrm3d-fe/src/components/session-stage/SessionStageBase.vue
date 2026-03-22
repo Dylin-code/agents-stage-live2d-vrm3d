@@ -1,5 +1,5 @@
 <template>
-  <div class="session-stage">
+  <div ref="stageRootRef" class="session-stage">
     <slot
       name="scene"
       :stageCanvas="stageCanvas"
@@ -204,10 +204,20 @@
       </div>
     </div>
 
+    <button v-if="isPortraitMode" class="portrait-sidebar-toggle" type="button" @click="portraitSidebarVisible = !portraitSidebarVisible">
+      ☰
+    </button>
+    <div v-if="isPortraitMode && portraitSidebarVisible" class="portrait-sidebar-backdrop" @click="portraitSidebarVisible = false" />
+
     <aside
       ref="sessionSidebarRef"
       class="session-sidebar"
-      :class="{ 'with-chat': chatModalVisible, 'focus-chat': focusChatMode }"
+      :class="{
+        'with-chat': chatModalVisible,
+        'focus-chat': focusChatMode,
+        'portrait-visible': isPortraitMode && portraitSidebarVisible,
+        'portrait-hidden': isPortraitMode && !portraitSidebarVisible,
+      }"
     >
       <div class="session-sidebar-header">
         <div class="session-sidebar-title">對話串</div>
@@ -313,6 +323,7 @@
       v-if="chatModalVisible"
       ref="chatDockRef"
       class="chat-dock"
+      :class="{ 'portrait-transparent': isPortraitMode }"
     >
       <div class="chat-dock-header">
         <div class="chat-dock-title">{{ chatConversation.label || 'Session 對話' }}</div>
@@ -328,6 +339,8 @@
           :agentSessionOptions="activeChatAgentOptions"
           :onAgentSessionOptionsChange="handleActiveSessionAgentOptionsChange"
           :onRequestRefreshBranches="refreshActiveSessionBranches"
+          :transparentMode="isPortraitMode"
+          :defaultAgentSettingsExpanded="!isPortraitMode"
         />
       </div>
     </div>
@@ -575,6 +588,13 @@ function switchView(): void {
 }
 
 function handleSidebarSessionCardClick(session: SessionSnapshotItem): void {
+  if (isPortraitMode.value) {
+    navigatePortraitToSession(session.session_id)
+    portraitSidebarVisible.value = false
+    // Also open that session's chat so the user sees the conversation immediately
+    openSessionChatBySessionId(session.session_id)
+    return
+  }
   if (isLive2DRenderer) {
     handleSessionCardClick(session.session_id)
     return
@@ -632,7 +652,17 @@ const {
   activeChatAgentOptions,
   handleActiveSessionAgentOptionsChange,
   refreshActiveSessionBranches,
+  isPortraitMode,
+  portraitSessionIndex,
+  totalPortraitSessions,
+  portraitSidebarVisible,
+  portraitAgentSettingsExpanded,
+  setupPortraitSwipeGesture,
+  navigatePortraitToSession,
 } = useSessionStage({ renderer: props.rendererMode })
+
+const stageRootRef = ref<HTMLElement | null>(null)
+setupPortraitSwipeGesture(stageRootRef)
 
 function onBrandChange(): void {
   newSessionForm.model = ''
@@ -1368,6 +1398,135 @@ canvas {
     right: 12px;
     bottom: 12px;
     max-height: 52vh;
+  }
+}
+
+/* ===== Portrait mode (direct-orientation mobile) ===== */
+@media (orientation: portrait) and (max-width: 920px) {
+  .stage-header {
+    top: 8px;
+    left: 8px;
+    gap: 5px;
+    max-width: calc(100vw - 60px);
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .stage-header::-webkit-scrollbar {
+    display: none;
+  }
+
+  .stage-header .status-chip {
+    font-size: 10px;
+    padding: 3px 7px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .stage-header .stage-view-switch {
+    font-size: 10px;
+    padding: 3px 7px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .stage-header .role-settings-toggle {
+    width: 26px;
+    height: 26px;
+    font-size: 14px;
+    flex-shrink: 0;
+  }
+
+  .role-settings-panel {
+    top: 42px;
+    left: 8px;
+    right: 8px;
+    width: auto;
+  }
+
+  .portrait-sidebar-toggle {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    z-index: 15;
+    width: 40px;
+    height: 40px;
+    border-radius: 999px;
+    border: 1px solid rgba(188, 216, 252, 0.45);
+    background: rgba(12, 39, 68, 0.86);
+    color: #ecf5ff;
+    font-size: 18px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    backdrop-filter: blur(8px);
+  }
+
+  .portrait-sidebar-toggle:active {
+    background: rgba(17, 49, 82, 0.9);
+  }
+
+  .portrait-sidebar-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    z-index: 19;
+  }
+
+  .session-sidebar {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: auto;
+    width: min(320px, 80vw);
+    max-height: 100vh;
+    border-radius: 14px 0 0 14px;
+    transform: translateX(100%);
+    transition: transform 0.3s ease;
+    z-index: 20;
+  }
+
+  .session-sidebar.portrait-visible {
+    transform: translateX(0);
+  }
+
+  .session-sidebar.portrait-hidden {
+    transform: translateX(100%);
+  }
+
+  .session-sidebar.with-chat {
+    bottom: 0;
+    max-height: 100vh;
+  }
+
+  .chat-dock.portrait-transparent {
+    background: transparent;
+    backdrop-filter: none;
+    border: none;
+    box-shadow: none;
+    top: 56px;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    max-height: none;
+    min-height: 0;
+    border-radius: 0;
+  }
+
+  .chat-dock.portrait-transparent .chat-dock-header {
+    background: rgba(9, 23, 41, 0.45);
+    backdrop-filter: blur(8px);
+    border-radius: 12px;
+    margin: 0 8px;
+    border-bottom: none;
+  }
+
+  .chat-dock.portrait-transparent .chat-dock-body {
+    flex: 1;
   }
 }
 </style>

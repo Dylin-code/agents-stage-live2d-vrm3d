@@ -1,5 +1,5 @@
 <template>
-  <div class="chat-container" :class="{ 'chat-container--danger': isFullAccess }">
+  <div class="chat-container" :class="{ 'chat-container--danger': isFullAccess, 'transparent-mode': props.transparentMode }">
     <div class="chat-header">
       <div class="chat-header-title">
         <span v-if="!isEditing">{{ localConversation.label }}</span>
@@ -16,62 +16,67 @@
       </div>
     </div>
 
-    <div v-if="props.forceAgentSession" class="agent-session-controls">
-      <div class="agent-session-row">
-        <label>Model</label>
-        <select v-model="agentOptions.model" @change="emitAgentOptions">
-          <option value="">預設 ({{ agentOptions.agent_brand === 'claude' ? 'sonnet' : 'gpt-5.3-codex' }})</option>
-          <option v-for="m in availableModels" :key="m" :value="m">{{ m }}</option>
-        </select>
+    <div v-if="props.forceAgentSession" class="agent-settings-wrapper">
+      <button class="agent-settings-toggle" type="button" @click="agentSettingsExpanded = !agentSettingsExpanded">
+        {{ agentSettingsExpanded ? '收起設定 ▲' : '模型設定 ▼' }}
+      </button>
+      <div v-show="agentSettingsExpanded" class="agent-session-controls">
+        <div class="agent-session-row">
+          <label>Model</label>
+          <select v-model="agentOptions.model" @change="emitAgentOptions">
+            <option value="">預設 ({{ agentOptions.agent_brand === 'claude' ? 'sonnet' : 'gpt-5.3-codex' }})</option>
+            <option v-for="m in availableModels" :key="m" :value="m">{{ m }}</option>
+          </select>
 
-        <label>推理</label>
-        <select v-model="agentOptions.reasoning_effort" @change="emitAgentOptions">
-          <option value="">預設 (medium)</option>
-          <option value="low">low</option>
-          <option value="medium">medium</option>
-          <option value="high">high</option>
-        </select>
+          <label>推理</label>
+          <select v-model="agentOptions.reasoning_effort" @change="emitAgentOptions">
+            <option value="">預設 (medium)</option>
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+          </select>
 
-        <label>執行模式</label>
-        <select v-model="agentOptions.permission_mode" @change="emitAgentOptions">
-          <option value="default">預設 (自動接受編輯)</option>
-          <option value="full">完整存取權</option>
-        </select>
-      </div>
+          <label>執行模式</label>
+          <select v-model="agentOptions.permission_mode" @change="emitAgentOptions">
+            <option value="default">預設 (自動接受編輯)</option>
+            <option value="full">完整存取權</option>
+          </select>
+        </div>
 
-      <div class="agent-session-row">
-        <label>分支</label>
-        <select v-model="agentOptions.git_branch" @change="emitAgentOptions">
-          <option value="">(不切換)</option>
-          <option v-for="b in availableBranches" :key="b" :value="b">{{ b }}</option>
-        </select>
-        <button class="mini-btn" type="button" @click="requestRefreshBranches">刷新分支</button>
+        <div class="agent-session-row">
+          <label>分支</label>
+          <select v-model="agentOptions.git_branch" @change="emitAgentOptions">
+            <option value="">(不切換)</option>
+            <option v-for="b in availableBranches" :key="b" :value="b">{{ b }}</option>
+          </select>
+          <button class="mini-btn" type="button" @click="requestRefreshBranches">刷新分支</button>
 
-        <label class="plan-toggle">
-          <input type="checkbox" v-model="agentOptions.plan_mode" @change="emitAgentOptions">
-          計劃模式
-        </label>
+          <label class="plan-toggle">
+            <input type="checkbox" v-model="agentOptions.plan_mode" @change="emitAgentOptions">
+            計劃模式
+          </label>
 
-        <label>CWD 覆寫</label>
-        <input
-          class="cwd-input"
-          type="text"
-          v-model.trim="agentOptions.cwd_override"
-          placeholder="預設沿用該 session"
-          @change="emitAgentOptions"
-        >
-      </div>
+          <label>CWD 覆寫</label>
+          <input
+            class="cwd-input"
+            type="text"
+            v-model.trim="agentOptions.cwd_override"
+            placeholder="預設沿用該 session"
+            @change="emitAgentOptions"
+          >
+        </div>
 
-      <div class="agent-session-row">
-        <label>圖片</label>
-        <input ref="imageInputRef" type="file" accept="image/*" multiple @change="handleImageInputChange">
-        <span class="hint">支援貼上圖片 (Ctrl/Cmd+V)</span>
-      </div>
-      <div v-if="agentImages.length > 0" class="image-chips">
-        <span class="image-chip" v-for="(img, idx) in agentImages" :key="img.name + idx">
-          {{ img.name }}
-          <button type="button" @click="removeImage(idx)">x</button>
-        </span>
+        <div class="agent-session-row">
+          <label>圖片</label>
+          <input ref="imageInputRef" type="file" accept="image/*" multiple @change="handleImageInputChange">
+          <span class="hint">支援貼上圖片 (Ctrl/Cmd+V)</span>
+        </div>
+        <div v-if="agentImages.length > 0" class="image-chips">
+          <span class="image-chip" v-for="(img, idx) in agentImages" :key="img.name + idx">
+            {{ img.name }}
+            <button type="button" @click="removeImage(idx)">x</button>
+          </span>
+        </div>
       </div>
     </div>
 
@@ -243,9 +248,18 @@ const props = defineProps({
     type: Function as PropType<() => void>,
     required: false,
   },
+  transparentMode: {
+    type: Boolean,
+    default: false,
+  },
+  defaultAgentSettingsExpanded: {
+    type: Boolean,
+    default: true,
+  },
 })
 
 const value = ref('')
+const agentSettingsExpanded = ref(props.defaultAgentSettingsExpanded)
 const localConversation = ref<Conversation>(props.conversation)
 const conversationRef = toRef(props, 'conversation')
 const waiting_for_input = ref(false)
@@ -1083,5 +1097,141 @@ onUnmounted(() => {
 @keyframes blink {
   0%, 80%, 100% { transform: scale(0.5); }
   40% { transform: scale(1); }
+}
+
+/* ===== Agent settings collapsible toggle ===== */
+.agent-settings-wrapper {
+  margin: 0 12px 8px;
+}
+
+.agent-settings-toggle {
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(166, 203, 245, 0.35);
+  background: rgba(18, 36, 56, 0.48);
+  backdrop-filter: blur(6px);
+  color: #d9e9ff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+}
+
+.agent-settings-toggle:hover {
+  background: rgba(24, 46, 72, 0.6);
+}
+
+/* ===== Transparent mode (portrait mobile) ===== */
+.chat-container.transparent-mode {
+  background: transparent;
+}
+
+.chat-container.transparent-mode .chat-header {
+  background-color: rgba(9, 23, 41, 0.4);
+  backdrop-filter: blur(8px);
+  color: #ecf5ff;
+  box-shadow: none;
+}
+
+.chat-container.transparent-mode .chat-header-title span {
+  color: #ecf5ff;
+}
+
+.chat-container.transparent-mode .messages {
+  background: transparent;
+}
+
+.chat-container.transparent-mode :deep(.ant-bubble-content) {
+  background: rgba(9, 23, 41, 0.5) !important;
+  backdrop-filter: blur(6px);
+  color: #f0f6ff !important;
+}
+
+.chat-container.transparent-mode :deep(.ant-bubble-content-inner) {
+  color: #f0f6ff !important;
+}
+
+.chat-container.transparent-mode :deep(.ant-bubble-content .ant-typography),
+.chat-container.transparent-mode :deep(.ant-bubble-content .ant-typography h1),
+.chat-container.transparent-mode :deep(.ant-bubble-content .ant-typography h2),
+.chat-container.transparent-mode :deep(.ant-bubble-content .ant-typography h3),
+.chat-container.transparent-mode :deep(.ant-bubble-content .ant-typography h4),
+.chat-container.transparent-mode :deep(.ant-bubble-content .ant-typography h5),
+.chat-container.transparent-mode :deep(.ant-bubble-content .ant-typography h6),
+.chat-container.transparent-mode :deep(.ant-bubble-content .ant-typography p),
+.chat-container.transparent-mode :deep(.ant-bubble-content .ant-typography li),
+.chat-container.transparent-mode :deep(.ant-bubble-content .ant-typography strong),
+.chat-container.transparent-mode :deep(.ant-bubble-content .ant-typography em),
+.chat-container.transparent-mode :deep(.ant-bubble-content .ant-typography blockquote),
+.chat-container.transparent-mode :deep(.ant-bubble-content .ant-typography th),
+.chat-container.transparent-mode :deep(.ant-bubble-content .ant-typography td) {
+  color: #f0f6ff !important;
+}
+
+.chat-container.transparent-mode :deep(.ant-bubble-content .ant-typography a) {
+  color: #8ec8ff !important;
+}
+
+.chat-container.transparent-mode :deep(.ant-bubble-content .ant-typography code) {
+  color: #c8e6ff !important;
+  background: rgba(255, 255, 255, 0.1) !important;
+}
+
+.chat-container.transparent-mode :deep(.ant-bubble-content .ant-typography pre) {
+  background: rgba(0, 0, 0, 0.3) !important;
+  color: #e8f0ff !important;
+}
+
+.chat-container.transparent-mode :deep(.ant-bubble-content .ant-typography pre code) {
+  color: #e8f0ff !important;
+  background: transparent !important;
+}
+
+/* Catch-all: ensure every element inside bubble content is light-colored in transparent mode */
+.chat-container.transparent-mode :deep(.ant-bubble-content *) {
+  color: #f0f6ff !important;
+}
+
+.chat-container.transparent-mode :deep(.ant-bubble-content a),
+.chat-container.transparent-mode :deep(.ant-bubble-content .ant-typography a) {
+  color: #8ec8ff !important;
+}
+
+.chat-container.transparent-mode :deep(.ant-bubble-content code) {
+  color: #c8e6ff !important;
+}
+
+.chat-container.transparent-mode :deep(.ant-bubble-content pre),
+.chat-container.transparent-mode :deep(.ant-bubble-content pre code) {
+  color: #e8f0ff !important;
+}
+
+.chat-container.transparent-mode .agent-settings-wrapper .agent-settings-toggle {
+  background: rgba(9, 23, 41, 0.4);
+}
+
+.chat-container.transparent-mode .agent-session-controls {
+  background: rgba(9, 23, 41, 0.4);
+}
+
+.chat-container.transparent-mode .chat-input-container {
+  background: rgba(9, 23, 41, 0.4);
+  backdrop-filter: blur(8px);
+  border-radius: 12px;
+  margin: 0 4px 4px;
+}
+
+.chat-container.transparent-mode :deep(.chat-sender) {
+  background-color: rgba(9, 23, 41, 0.5) !important;
+  color: #f0f6ff !important;
+}
+
+.chat-container.transparent-mode :deep(.chat-sender textarea) {
+  color: #f0f6ff !important;
+}
+
+.chat-container.transparent-mode :deep(.chat-sender textarea::placeholder) {
+  color: rgba(220, 235, 255, 0.5) !important;
 }
 </style>
