@@ -20,6 +20,11 @@ export interface FlowInteractTarget {
   pointType?: string
 }
 
+export interface FlowLoopMotionSegment {
+  vrmaFile: string
+  durationSeconds: number
+}
+
 /** 單一步驟的配置 */
 export interface BehaviorFlowStep {
   id: string
@@ -36,6 +41,7 @@ export interface BehaviorFlowStep {
   /** 互動動畫覆寫（留空則用互動點預設動畫） */
   interactEnterVrma?: string
   interactLoopVrma?: string
+  interactLoopSequence?: FlowLoopMotionSegment[]
   interactExitVrma?: string
   /** 互動方向覆寫（角度，-180~180；留空用互動點預設） */
   interactRotationYOverride?: number

@@ -143,4 +143,69 @@ describe('vrmBehaviorScheduler', () => {
       { loop: 'repeat' },
     )
   })
+
+  it('rotates interaction loop motions by configured durations', () => {
+    const point = createPoint()
+    const playActorMotion = vi.fn(async () => null)
+
+    const scheduler = createVrmBehaviorScheduler({
+      pickRoamTarget: () => new THREE.Vector3(),
+      resolveToWalkablePosition: (desired) => desired.clone(),
+      isWalkablePosition: () => true,
+      faceActorTowardDirection: () => {},
+      playActorMotion,
+      getPointById: () => point,
+      occupyPoint: () => true,
+      releasePoint: () => {},
+      setActorTargetPosition: () => {},
+      setActorRoamTarget: () => {},
+      getRoutePointsByModel: () => [],
+      getActorRoutePoint: () => new THREE.Vector3(),
+      roamSpeedRange: { min: 0.2, max: 0.8 },
+      roamStopRange: { min: 2, max: 5 },
+      moveReachDistance: 0.22,
+      roamMoveVrma: 'Walking.vrma',
+      roamPauseVrmaFiles: ['Relax.vrma'],
+    })
+
+    const actor = {
+      sessionId: 'session-3',
+      modelUrl: 'model.vrm',
+      targetPosition: new THREE.Vector3(),
+      roamTarget: new THREE.Vector3(),
+      roamSpeed: 0.4,
+      root: new THREE.Group(),
+      behavior: {
+        steps: [
+          {
+            type: 'interact' as const,
+            interactionPointId: point.id,
+            interactionPhase: 'loop' as const,
+            interactLoopSequence: [
+              { vrmaFile: 'Thinking.vrma', durationMs: 1000 },
+              { vrmaFile: 'Relax.vrma', durationMs: 2000 },
+            ],
+          },
+        ],
+        currentIndex: 0,
+        stepStartedAt: 0,
+        interruptible: true,
+        onComplete: 'idle' as const,
+        motionApplied: false,
+      },
+      occupyingPointId: point.id,
+      routePointIndex: 0,
+    }
+
+    scheduler.updateBehavior(actor, 0, 0)
+    scheduler.updateBehavior(actor, 0.5, 0)
+    scheduler.updateBehavior(actor, 1.2, 0)
+    scheduler.updateBehavior(actor, 3.3, 0)
+
+    expect(playActorMotion.mock.calls).toEqual([
+      [actor, 'Thinking.vrma', { loop: 'repeat' }],
+      [actor, 'Relax.vrma', { loop: 'repeat' }],
+      [actor, 'Thinking.vrma', { loop: 'repeat' }],
+    ])
+  })
 })

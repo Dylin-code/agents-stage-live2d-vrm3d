@@ -20,6 +20,7 @@ export interface BehaviorStep {
   /** interact 動畫覆寫（優先於互動點預設動畫） */
   interactEnterVrma?: string
   interactLoopVrma?: string
+  interactLoopSequence?: Array<{ vrmaFile: string; durationMs: number }>
   interactExitVrma?: string
   /** 互動方向覆寫（角度）；留空用互動點預設 */
   interactRotationYOverride?: number
@@ -37,6 +38,7 @@ export interface ActorBehavior {
   interruptible: boolean
   onComplete?: 'loop' | 'roam' | 'idle'
   motionApplied?: boolean
+  activeLoopMotionFile?: string
   /** 卡點偵測：上次記錄的距離目標距離 */
   _lastDistToTarget?: number
   /** 卡點偵測：上次有明顯進展的時間 */
@@ -104,6 +106,36 @@ export function createVrmBehaviorScheduler(args: {
   const _candidate = new THREE.Vector3()
   const _roamTargetQuat = new THREE.Quaternion()
   const _roamTargetEuler = new THREE.Euler()
+
+  function normalizeInteractLoopSequence(step: BehaviorStep, point: InteractionPoint): Array<{ vrmaFile: string; durationMs: number }> {
+    const sequence = (step.interactLoopSequence || [])
+      .filter((item) => item && typeof item.vrmaFile === 'string' && item.vrmaFile.trim())
+      .map((item) => ({
+        vrmaFile: item.vrmaFile.trim(),
+        durationMs: Math.max(0, Number(item.durationMs) || 0),
+      }))
+    if (sequence.length > 0) return sequence
+    const fallbackVrma = step.interactLoopVrma || point.action.loopVrma
+    return fallbackVrma ? [{ vrmaFile: fallbackVrma, durationMs: 0 }] : []
+  }
+
+  function resolveInteractLoopMotion(step: BehaviorStep, point: InteractionPoint, elapsedMs: number): string | null {
+    const sequence = normalizeInteractLoopSequence(step, point)
+    if (sequence.length === 0) return null
+    if (sequence.length === 1 && sequence[0]!.durationMs <= 0) {
+      return sequence[0]!.vrmaFile
+    }
+    const totalDuration = sequence.reduce((sum, item) => sum + Math.max(1, item.durationMs), 0)
+    let cursor = totalDuration > 0 ? elapsedMs % totalDuration : 0
+    for (const item of sequence) {
+      const segmentDuration = Math.max(1, item.durationMs)
+      if (cursor < segmentDuration) {
+        return item.vrmaFile
+      }
+      cursor -= segmentDuration
+    }
+    return sequence[sequence.length - 1]!.vrmaFile
+  }
 
   function randomRange(min: number, max: number): number {
     return min + Math.random() * (max - min)
@@ -422,9 +454,11 @@ export function createVrmBehaviorScheduler(args: {
       }
 
       case 'loop': {
-        if (!behavior.motionApplied) {
+        const elapsed = (now - behavior.stepStartedAt) * 1000
+        const loopVrma = resolveInteractLoopMotion(step, point, elapsed)
+        if (loopVrma && behavior.activeLoopMotionFile !== loopVrma) {
           behavior.motionApplied = true
-          const loopVrma = step.interactLoopVrma || point.action.loopVrma
+          behavior.activeLoopMotionFile = loopVrma
           void playActorMotion(actor, loopVrma, { loop: 'repeat' }).catch(() => {})
         }
         // loop 永不自動完成，等待打斷
@@ -491,6 +525,7 @@ export function createVrmBehaviorScheduler(args: {
       behavior.currentIndex++
       behavior.stepStartedAt = now
       behavior.motionApplied = false
+      behavior.activeLoopMotionFile = undefined
       behavior._lastDistToTarget = undefined
       behavior._lastProgressAt = undefined
     }
@@ -506,6 +541,7 @@ export function createVrmBehaviorScheduler(args: {
         behavior.currentIndex = 0
         behavior.stepStartedAt = now
         behavior.motionApplied = false
+        behavior.activeLoopMotionFile = undefined
         break
       }
       case 'roam':
@@ -544,6 +580,7 @@ export function createVrmBehaviorScheduler(args: {
       behavior.currentIndex = 0
       behavior.stepStartedAt = 0 // 會在下一次 updateBehavior 時被 now 覆蓋
       behavior.motionApplied = false
+      behavior.activeLoopMotionFile = undefined
       behavior.onComplete = 'idle'
       return
     }

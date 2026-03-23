@@ -6,6 +6,12 @@ interface Message {
   loading: boolean | undefined;
 }
 
+interface CharacterPersona {
+    id: string;
+    name: string;
+    content: string;
+}
+
 interface LLMSettings {
     assistantName: string;
     sysPrompt: string | undefined;
@@ -14,6 +20,7 @@ interface LLMSettings {
     apiKey: string | undefined;
     mcpServers: string | undefined;
     agents: string | undefined;
+    personas?: CharacterPersona[];
 }
 
 interface Live2DSettings {
@@ -96,4 +103,4 @@ interface KnowledgeFile {
     text: string;
 }
 
-export type { Message, LLMSettings, ChatHistory, SystemSettings, Live2DSettings, SessionStageSettings, MCPServer, MCPServerStatus, MCPServerTool, Conversation, AgentConfig, ToolResouce, KnowledgeFile };
+export type { Message, CharacterPersona, LLMSettings, ChatHistory, SystemSettings, Live2DSettings, SessionStageSettings, MCPServer, MCPServerStatus, MCPServerTool, Conversation, AgentConfig, ToolResouce, KnowledgeFile };

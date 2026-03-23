@@ -4,6 +4,7 @@ import type { SystemSettings } from '../../types/message'
 import type { Live2DModelItem } from '../../utils/api/live2dModels'
 import { fetchLive2DModels } from '../../utils/api/live2dModels'
 import { resolveBridgeWsUrl } from '../../utils/api/sessionBridge'
+import { sanitizeCharacterPersonas } from '../../utils/personas'
 import { normalizeModelPaths, type ModelMotionEntry } from './live2dMotionUtils'
 
 export function createSessionStageModelCatalogUtils(args: {
@@ -64,6 +65,33 @@ export function createSessionStageModelCatalogUtils(args: {
     localStorage.setItem(storageKey, JSON.stringify(parsed))
   }
 
+  function normalizeSystemSettings(rawSettings: unknown): SystemSettings {
+    const fallback = buildDefaultSystemSettings()
+    const settings = (rawSettings && typeof rawSettings === 'object') ? rawSettings as Partial<SystemSettings> : {}
+    return {
+      ...fallback,
+      ...settings,
+      sessionStage: { ...fallback.sessionStage, ...(settings.sessionStage || {}) },
+      assistantSettings: {
+        ...fallback.assistantSettings,
+        ...(settings.assistantSettings || {}),
+        personas: sanitizeCharacterPersonas(settings.assistantSettings?.personas),
+      },
+      live2DSettings: { ...fallback.live2DSettings, ...(settings.live2DSettings || {}) },
+    }
+  }
+
+  function saveSystemSettings(nextSettings: SystemSettings): void {
+    const raw = localStorage.getItem(storageKey)
+    const parsed = raw ? JSON.parse(raw) : {}
+    const normalized = normalizeSystemSettings(nextSettings)
+    parsed.systemSettings = normalized
+    chatSystemSettings.value = normalized
+    localStorage.setItem(storageKey, JSON.stringify(parsed))
+    setServerUrl(normalized.serverUrl)
+    setBridgeUrl(resolveBridgeWsUrl(normalized.serverUrl, normalized.sessionStage?.bridgeUrl))
+  }
+
   function loadSettings(): void {
     const fallback = buildDefaultSystemSettings()
     chatSystemSettings.value = fallback
@@ -74,14 +102,8 @@ export function createSessionStageModelCatalogUtils(args: {
     }
     try {
       const parsed = JSON.parse(raw)
-      const settings = parsed?.systemSettings || {}
-      chatSystemSettings.value = {
-        ...fallback,
-        ...settings,
-        sessionStage: { ...fallback.sessionStage, ...(settings.sessionStage || {}) },
-        assistantSettings: { ...fallback.assistantSettings, ...(settings.assistantSettings || {}) },
-        live2DSettings: { ...fallback.live2DSettings, ...(settings.live2DSettings || {}) },
-      }
+      const settings = normalizeSystemSettings(parsed?.systemSettings || {})
+      chatSystemSettings.value = settings
       if (settings.serverUrl) {
         setServerUrl(settings.serverUrl)
       }
@@ -211,6 +233,7 @@ export function createSessionStageModelCatalogUtils(args: {
     applyModelPathsInput,
     isModelSelected,
     toggleModel,
+    saveSystemSettings,
     toAssetUrl,
   }
 }

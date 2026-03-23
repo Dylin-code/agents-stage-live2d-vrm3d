@@ -17,6 +17,7 @@ export function buildDefaultSystemSettings(): SystemSettings {
       baseUrl: undefined,
       mcpServers: '',
       agents: '',
+      personas: [],
     },
     live2DSettings: {
       modelPath: 'assets/models/Senko_Normals/senko.model3.json',

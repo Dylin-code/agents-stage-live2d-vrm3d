@@ -111,6 +111,9 @@ export interface SessionBridgeNewSessionRequest {
   permission_mode?: string
   plan_mode?: boolean
   agent_brand?: AgentBrand
+  persona_id?: string
+  persona_name?: string
+  persona_content?: string
 }
 
 // Legacy compatibility adapter for old callers.

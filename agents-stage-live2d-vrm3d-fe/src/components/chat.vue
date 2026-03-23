@@ -44,6 +44,19 @@
         </div>
 
         <div class="agent-session-row">
+          <label>角色個性</label>
+          <select v-model="agentOptions.persona_id" @change="handlePersonaSelectionChange">
+            <option value="">無</option>
+            <option v-for="persona in personaOptions" :key="persona.id" :value="persona.id">{{ persona.name }}</option>
+            <option
+              v-if="missingPersonaOption"
+              :key="missingPersonaOption.id"
+              :value="missingPersonaOption.id"
+            >
+              {{ missingPersonaOption.name }}
+            </option>
+          </select>
+
           <label>分支</label>
           <select v-model="agentOptions.git_branch" @change="emitAgentOptions">
             <option value="">(不切換)</option>
@@ -133,7 +146,7 @@ import { PropType } from 'vue'
 import { fetchEventData } from 'fetch-sse'
 import markdownit from 'markdown-it'
 import { v4 as uuidv4 } from 'uuid'
-import { Message, SystemSettings, ChatHistory, Conversation } from '../types/message'
+import { CharacterPersona, Message, SystemSettings, ChatHistory, Conversation } from '../types/message'
 import {
   buildChatRequestPayload,
   AgentImageInput,
@@ -143,6 +156,7 @@ import {
 } from '../utils/chatRequestPath'
 import { DEFAULT_AGENT_BRANDS, getAgentBrandModels } from '../utils/agentBrands'
 import { submitAgentApproval } from '../utils/api/sessionBridge'
+import { resolveSelectedCharacterPersona, sanitizeCharacterPersonas } from '../utils/personas'
 import ToolCall from './tool_call.vue'
 
 const md = markdownit({ html: true, breaks: true })
@@ -172,6 +186,9 @@ interface AgentSessionUiOptions {
   available_branches?: string[]
   cwd?: string
   agent_brand?: string
+  persona_id?: string
+  persona_name?: string
+  persona_content?: string
 }
 
 const roles: BubbleListProps['roles'] = {
@@ -272,6 +289,20 @@ const pendingApproval = ref<PendingApproval | null>(null)
 
 const availableModels = ref<string[]>([])
 const availableBranches = ref<string[]>([])
+const personaOptions = computed<CharacterPersona[]>(() => {
+  return sanitizeCharacterPersonas(props.systemSettings?.assistantSettings.personas)
+})
+const missingPersonaOption = computed<CharacterPersona | undefined>(() => {
+  if (personaOptions.value.some((item) => item.id === agentOptions.value.persona_id)) {
+    return undefined
+  }
+  return resolveSelectedCharacterPersona(
+    personaOptions.value,
+    agentOptions.value.persona_id,
+    agentOptions.value.persona_name,
+    agentOptions.value.persona_content,
+  )
+})
 
 const message2BubbleListItem = () => {
   return localConversation.value.messages.map((msg) => ({
@@ -367,6 +398,9 @@ const syncAgentOptions = () => {
     available_branches: source.available_branches || [],
     cwd: source.cwd || '',
     agent_brand: brand,
+    persona_id: source.persona_id || '',
+    persona_name: source.persona_name || '',
+    persona_content: source.persona_content || '',
   }
   const fallbackModels = getAgentBrandModels(DEFAULT_AGENT_BRANDS, brand)
   availableModels.value = (source.available_models && source.available_models.length > 0)
@@ -382,6 +416,19 @@ const emitAgentOptions = () => {
     available_models: availableModels.value,
     available_branches: availableBranches.value,
   })
+}
+
+const handlePersonaSelectionChange = () => {
+  const selected = resolveSelectedCharacterPersona(
+    personaOptions.value,
+    agentOptions.value.persona_id,
+    agentOptions.value.persona_name,
+    agentOptions.value.persona_content,
+  )
+  agentOptions.value.persona_id = selected?.id || ''
+  agentOptions.value.persona_name = selected?.name || ''
+  agentOptions.value.persona_content = selected?.content || ''
+  emitAgentOptions()
 }
 
 const requestRefreshBranches = () => {
@@ -585,6 +632,9 @@ const sendMessageToServer = async (messages: ChatHistory[]) => {
         cwd_override: agentOptions.value.cwd_override || undefined,
         git_branch: agentOptions.value.git_branch || undefined,
         agent_brand: agentOptions.value.agent_brand || undefined,
+        persona_id: agentOptions.value.persona_id,
+        persona_name: agentOptions.value.persona_name,
+        persona_content: agentOptions.value.persona_content,
       }
     : undefined
 
@@ -699,6 +749,9 @@ const sendMessageToServer = async (messages: ChatHistory[]) => {
         if (ctx.cwd) agentOptions.value.cwd_override = String(ctx.cwd)
         if (typeof ctx.plan_mode === 'boolean') agentOptions.value.plan_mode = !!ctx.plan_mode
         if (ctx.agent_brand) agentOptions.value.agent_brand = String(ctx.agent_brand)
+        if (ctx.persona_id !== undefined) agentOptions.value.persona_id = String(ctx.persona_id || '')
+        if (ctx.persona_name !== undefined) agentOptions.value.persona_name = String(ctx.persona_name || '')
+        if (ctx.persona_content !== undefined) agentOptions.value.persona_content = String(ctx.persona_content || '')
         emitAgentOptions()
         return
       }

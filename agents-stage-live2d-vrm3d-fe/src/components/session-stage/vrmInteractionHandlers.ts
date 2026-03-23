@@ -118,7 +118,8 @@ export function createVrmInteractionHandlers(args: {
     const session = customEvent.detail?.session
     if (!session || !session.session_id) return
     try {
-      await ensureSessionOnStage(session, true)
+      await ensureSessionOnStage(session, false)
+      optionsOnCharacterClick(session.session_id)
       updateAllHeadLabels()
       setLoadingText(getActorsLength() ? '' : '等待 Session 資料...')
     } catch (error) {

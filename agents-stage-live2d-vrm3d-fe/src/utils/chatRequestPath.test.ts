@@ -61,6 +61,9 @@ describe('buildChatRequestPayload', () => {
         cwd_override: '/repo',
         git_branch: 'feature/a',
         agent_brand: 'claude',
+        persona_id: 'persona-1',
+        persona_name: '冷靜 PM',
+        persona_content: '用冷靜、條理分明的方式回覆。',
       },
     })
     expect(payload).toEqual({
@@ -74,6 +77,9 @@ describe('buildChatRequestPayload', () => {
       cwd_override: '/repo',
       git_branch: 'feature/a',
       agent_brand: 'claude',
+      persona_id: 'persona-1',
+      persona_name: '冷靜 PM',
+      persona_content: '用冷靜、條理分明的方式回覆。',
     })
   })
 

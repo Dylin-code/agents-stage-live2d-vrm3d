@@ -19,6 +19,9 @@ export interface AgentSessionPayloadOptions {
   cwd_override?: string
   git_branch?: string
   agent_brand?: string
+  persona_id?: string
+  persona_name?: string
+  persona_content?: string
 }
 
 export type CodexImageInput = AgentImageInput
@@ -79,6 +82,9 @@ export function buildChatRequestPayload(mode: ChatRequestMode, payload: BuildCha
     if (options.cwd_override) result.cwd_override = options.cwd_override
     if (options.git_branch) result.git_branch = options.git_branch
     if (options.agent_brand) result.agent_brand = options.agent_brand
+    if (options.persona_id !== undefined) result.persona_id = options.persona_id
+    if (options.persona_name !== undefined) result.persona_name = options.persona_name
+    if (options.persona_content !== undefined) result.persona_content = options.persona_content
     return result
   }
   return {

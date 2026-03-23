@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import re
 import time
@@ -62,6 +63,7 @@ _AUTO_INJECTED_MESSAGE_PREFIXES = (
     "# agents.md instructions for ",
     "warning: apply_patch was requested via",
 )
+SESSION_BRIDGE_PROMPT_SCHEMA = "session_bridge_user_input_v1"
 
 
 def _ensure_stream_reader_limit(
@@ -157,6 +159,91 @@ def _extract_message_content(payload: dict[str, Any]) -> str:
 def _normalize_message_for_compare(text: str) -> str:
     normalized = WHITESPACE_PATTERN.sub(" ", str(text or "")).strip().lower()
     return normalized
+
+
+def _normalize_persona_value(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _normalize_persona_payload(value: Any) -> Optional[dict[str, str]]:
+    if not isinstance(value, dict):
+        return None
+    persona_id = _normalize_persona_value(value.get("id"))
+    persona_name = _normalize_persona_value(value.get("name"))
+    persona_content = str(value.get("content") or "")
+    if not persona_id and not persona_name and not persona_content.strip():
+        return None
+    return {
+        "id": persona_id,
+        "name": persona_name,
+        "content": persona_content,
+    }
+
+
+def _build_session_bridge_prompt(
+    user_input: str,
+    *,
+    persona_id: Optional[str] = None,
+    persona_name: Optional[str] = None,
+    persona_content: Optional[str] = None,
+    plan_mode: Optional[bool] = None,
+) -> str:
+    payload = {
+        "schema": SESSION_BRIDGE_PROMPT_SCHEMA,
+        "plan_mode": bool(plan_mode),
+        "personality": _normalize_persona_payload({
+            "id": persona_id,
+            "name": persona_name,
+            "content": persona_content,
+        }),
+        "user_input": str(user_input or ""),
+        "instructions": [
+            "Treat personality.content as optional behavior guidance for this session.",
+            "Respond to user_input only; do not repeat or expose the JSON envelope.",
+            "If plan_mode is true, provide a detailed implementation plan before any code edits.",
+        ],
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _parse_session_bridge_prompt(content: Any) -> Optional[dict[str, Any]]:
+    if not isinstance(content, str):
+        return None
+    candidate = content.strip()
+    if not candidate.startswith("{"):
+        return None
+    try:
+        payload = json.loads(candidate)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if str(payload.get("schema") or "").strip() != SESSION_BRIDGE_PROMPT_SCHEMA:
+        return None
+    user_input = payload.get("user_input")
+    if not isinstance(user_input, str):
+        return None
+    personality = _normalize_persona_payload(payload.get("personality"))
+    return {
+        "user_input": user_input,
+        "personality": personality,
+        "plan_mode": bool(payload.get("plan_mode")),
+    }
+
+
+def _extract_visible_user_input(content: Any) -> str:
+    parsed = _parse_session_bridge_prompt(content)
+    if parsed is not None:
+        return str(parsed.get("user_input") or "").strip()
+    return str(content or "").strip()
+
+
+def _extract_prompt_persona(content: Any) -> Optional[dict[str, str]]:
+    parsed = _parse_session_bridge_prompt(content)
+    if parsed is None:
+        return None
+    personality = parsed.get("personality")
+    return personality if isinstance(personality, dict) else None
 
 
 def _is_auto_injected_message(role: str, content: str) -> bool:
@@ -299,6 +386,9 @@ class _SessionRecord:
     model_context_window: int = 0
     primary_rate_remaining_percent: Optional[float] = None
     secondary_rate_remaining_percent: Optional[float] = None
+    persona_id: str = ""
+    persona_name: str = ""
+    persona_content: str = ""
     last_event_type: str = ""
     has_real_user_input: bool = False
 
@@ -316,6 +406,9 @@ class AgentChatRequest(BaseModel):
     cwd_override: Optional[str] = None
     git_branch: Optional[str] = None
     agent_brand: Optional[str] = None
+    persona_id: Optional[str] = None
+    persona_name: Optional[str] = None
+    persona_content: Optional[str] = None
 
 
 class AgentChatApprovalRequest(BaseModel):
@@ -334,6 +427,9 @@ class AgentNewSessionRequest(BaseModel):
     sandbox_mode: Optional[str] = None
     plan_mode: Optional[bool] = None
     agent_brand: Optional[str] = None
+    persona_id: Optional[str] = None
+    persona_name: Optional[str] = None
+    persona_content: Optional[str] = None
 
 
 class GitBranchSwitchRequest(BaseModel):

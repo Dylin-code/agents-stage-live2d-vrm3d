@@ -149,6 +149,47 @@ describe('vrmBehaviorDecisionUtils', () => {
       interactOffsetY: -0.3,
       interactOffsetZ: 0.2,
     })
+    expect(resolved?.steps[2]).toMatchObject({
+      interactionPhase: 'loop',
+      interactLoopSequence: undefined,
+    })
+  })
+
+  it('converts interact loop sequence seconds into scheduler milliseconds', () => {
+    const point = createPoint('chair-3', 'sit', 2, 4)
+
+    const resolved = resolveFlowSteps(
+      [
+        {
+          id: 'step-1',
+          type: 'interact',
+          interactTarget: {
+            mode: 'specific',
+            interactionPointId: point.id,
+          },
+          interactLoopSequence: [
+            { vrmaFile: 'Thinking.vrma', durationSeconds: 2 },
+            { vrmaFile: 'Relax.vrma', durationSeconds: 3.5 },
+          ],
+        },
+      ],
+      {
+        actorState: 'IDLE',
+        hasCustomRoute: false,
+        isInteracting: false,
+        findPointById: (pointId) => (pointId === point.id ? point : null),
+        findNearestAvailablePoint: () => null,
+        actorPosition: { x: 0, z: 0 },
+      },
+    )
+
+    expect(resolved?.steps[2]).toMatchObject({
+      interactionPhase: 'loop',
+      interactLoopSequence: [
+        { vrmaFile: 'Thinking.vrma', durationMs: 2000 },
+        { vrmaFile: 'Relax.vrma', durationMs: 3500 },
+      ],
+    })
   })
 
   it('resolves playMotion offsets into scheduler steps', () => {

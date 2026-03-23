@@ -43,6 +43,7 @@ import {
   loadVrmActorSlotConfig,
   normalizeVrmActorSlotConfig,
 } from './vrmActorSlotSettings'
+import type { StoredCameraView } from './vrmRouteCameraUtils'
 
 interface UseVrmStageOptions {
   containerRef: Ref<HTMLElement | null>
@@ -135,6 +136,11 @@ const CAMERA_VIEW_STORAGE_KEY = 'vrm-stage-camera-view-v1'
 const CAMERA_VIEW_SAVE_DEBOUNCE_MS = 120
 const INTERACTION_POINTS_STORAGE_KEY = buildInteractionPointsStorageKey(STAGE_SCENE_URL)
 const VRM_ACTOR_SLOT_OPTIONS = DEFAULT_VRM_ACTOR_SLOT_OPTIONS
+const FOCUS_CAMERA_DISTANCE = 2.5
+const FOCUS_CAMERA_HEIGHT_OFFSET = 0.16
+const FOCUS_CAMERA_TARGET_HEIGHT = 1.3
+const FOCUS_CAMERA_LERP_DAMPING = 8
+const FOCUS_CAMERA_RESTORE_EPSILON = 0.02
 
 export function resolveActorTargetY(
   inputY: number,
@@ -143,6 +149,26 @@ export function resolveActorTargetY(
   preserveInputY = false,
 ): number {
   return preserveInputY ? inputY : actorGroundOffset + globalGroundOffset
+}
+
+export function buildDialogFocusCameraView(
+  target: THREE.Vector3,
+  actorForward: THREE.Vector3,
+  distance = FOCUS_CAMERA_DISTANCE,
+  heightOffset = FOCUS_CAMERA_HEIGHT_OFFSET,
+): StoredCameraView {
+  const normalizedForward = actorForward.clone()
+  if (normalizedForward.lengthSq() <= 1e-6) {
+    normalizedForward.set(0, 0, 1)
+  } else {
+    normalizedForward.normalize()
+  }
+  const position = target.clone().addScaledVector(normalizedForward, distance)
+  position.y += heightOffset
+  return {
+    position: { x: position.x, y: position.y, z: position.z },
+    target: { x: target.x, y: target.y, z: target.z },
+  }
 }
 
 export function useVrmStage(options: UseVrmStageOptions) {
@@ -179,6 +205,11 @@ export function useVrmStage(options: UseVrmStageOptions) {
   let stageCameraPosition: THREE.Vector3 | null = null
   let stageWorldCenter: THREE.Vector3 | null = null
   let stageWorldSize: THREE.Vector3 | null = null
+  let cameraFocusSessionId = ''
+  let cameraFocusSavedView: StoredCameraView | null = null
+  let cameraFocusDesiredView: StoredCameraView | null = null
+  let cameraFocusRestoring = false
+  let suppressCameraViewSave = false
   const sceneLights: THREE.Light[] = []
   const sceneLightTargets: THREE.Object3D[] = []
   const stageObstacles: StageObstacle[] = []
@@ -195,6 +226,10 @@ export function useVrmStage(options: UseVrmStageOptions) {
   const roamCandidatePosition = new THREE.Vector3()
   const roamTargetQuaternion = new THREE.Quaternion()
   const roamTargetEuler = new THREE.Euler()
+  const focusTargetWorld = new THREE.Vector3()
+  const focusForwardWorld = new THREE.Vector3()
+  const focusTargetLerp = new THREE.Vector3()
+  const focusPositionLerp = new THREE.Vector3()
 
   const actors: VrmActor[] = []
   /** 響應式版本號 — 每次 actors 增刪時遞增，讓 Vue computed 可追蹤 */
@@ -315,6 +350,122 @@ export function useVrmStage(options: UseVrmStageOptions) {
     loadingText.value = text
   }
 
+  function captureCurrentCameraView(): StoredCameraView | null {
+    if (!camera || !controls) return null
+    return {
+      position: { x: camera.position.x, y: camera.position.y, z: camera.position.z },
+      target: { x: controls.target.x, y: controls.target.y, z: controls.target.z },
+    }
+  }
+
+  function applyCameraView(view: StoredCameraView): void {
+    if (!camera || !controls) return
+    suppressCameraViewSave = true
+    camera.position.set(view.position.x, view.position.y, view.position.z)
+    controls.target.set(view.target.x, view.target.y, view.target.z)
+    controls.update()
+    suppressCameraViewSave = false
+  }
+
+  function isCameraFocusing(): boolean {
+    return !!cameraFocusSessionId || !!cameraFocusDesiredView || cameraFocusRestoring
+  }
+
+  function getActorFocusView(actor: VrmActor): StoredCameraView {
+    const headNode = actor.vrm.humanoid?.getNormalizedBoneNode?.('head') || null
+    const neckNode = actor.vrm.humanoid?.getNormalizedBoneNode?.('neck') || null
+    const chestNode = actor.vrm.humanoid?.getNormalizedBoneNode?.('chest') || null
+    const focusNode = headNode || neckNode || chestNode || actor.root
+    focusNode.getWorldPosition(focusTargetWorld)
+    if (!headNode && !neckNode && !chestNode) {
+      focusTargetWorld.y += FOCUS_CAMERA_TARGET_HEIGHT
+    }
+    actor.root.getWorldDirection(focusForwardWorld)
+    return buildDialogFocusCameraView(focusTargetWorld, focusForwardWorld)
+  }
+
+  function updateCameraFocusTarget(): void {
+    if (!cameraFocusSessionId) return
+    const actor = actors.find((item) => item.sessionId === cameraFocusSessionId)
+    if (!actor) return
+    cameraFocusDesiredView = getActorFocusView(actor)
+  }
+
+  function enterCameraFocus(sessionId: string): void {
+    if (!sessionId) return
+    if (!cameraFocusSavedView) {
+      cameraFocusSavedView = captureCurrentCameraView()
+    }
+    cameraFocusSessionId = sessionId
+    cameraFocusRestoring = false
+    if (controls) {
+      controls.enabled = false
+    }
+    updateCameraFocusTarget()
+  }
+
+  function leaveCameraFocus(): void {
+    cameraFocusSessionId = ''
+    if (cameraFocusSavedView) {
+      cameraFocusDesiredView = cameraFocusSavedView
+      cameraFocusRestoring = true
+      if (controls) {
+        controls.enabled = false
+      }
+      return
+    }
+    cameraFocusDesiredView = null
+    cameraFocusRestoring = false
+    if (controls) {
+      controls.enabled = true
+    }
+  }
+
+  function handleCameraFocusSessionChange(sessionId: string): void {
+    if (sessionId) {
+      enterCameraFocus(sessionId)
+      updateAllHeadLabels()
+      return
+    }
+    leaveCameraFocus()
+    updateAllHeadLabels()
+  }
+
+  function updateCameraFocus(delta: number): void {
+    if (!camera || !controls || !cameraFocusDesiredView) return
+    if (cameraFocusSessionId) {
+      updateCameraFocusTarget()
+      if (!cameraFocusDesiredView) return
+    }
+    focusPositionLerp.set(
+      cameraFocusDesiredView.position.x,
+      cameraFocusDesiredView.position.y,
+      cameraFocusDesiredView.position.z,
+    )
+    focusTargetLerp.set(
+      cameraFocusDesiredView.target.x,
+      cameraFocusDesiredView.target.y,
+      cameraFocusDesiredView.target.z,
+    )
+    const lerpAlpha = 1 - Math.exp(-FOCUS_CAMERA_LERP_DAMPING * Math.max(delta, 0.001))
+    suppressCameraViewSave = true
+    camera.position.lerp(focusPositionLerp, Math.min(1, lerpAlpha))
+    controls.target.lerp(focusTargetLerp, Math.min(1, lerpAlpha))
+    controls.update()
+    suppressCameraViewSave = false
+
+    const positionDelta = camera.position.distanceTo(focusPositionLerp)
+    const targetDelta = controls.target.distanceTo(focusTargetLerp)
+    if (!cameraFocusRestoring || positionDelta > FOCUS_CAMERA_RESTORE_EPSILON || targetDelta > FOCUS_CAMERA_RESTORE_EPSILON) {
+      return
+    }
+    applyCameraView(cameraFocusDesiredView)
+    cameraFocusDesiredView = null
+    cameraFocusSavedView = null
+    cameraFocusRestoring = false
+    controls.enabled = true
+  }
+
   function hasCustomRoute(modelUrl?: string): boolean {
     if (modelUrl) {
       return getRoutePointsByModel(modelUrl).length >= 2
@@ -377,6 +528,10 @@ export function useVrmStage(options: UseVrmStageOptions) {
       cameraViewSaveTimer = timer
     },
   })
+  const handleControlsChange = (): void => {
+    if (suppressCameraViewSave || isCameraFocusing()) return
+    scheduleSaveCameraView()
+  }
 
   const { rebuildStageObstacles, loadStageScene, setupLights } = createVrmSceneSetupUtils({
     getScene: () => scene,
@@ -1426,23 +1581,23 @@ export function useVrmStage(options: UseVrmStageOptions) {
     if (camera && controls) {
       const storedCameraView = loadCameraViewFromStorage()
       if (storedCameraView) {
-        camera.position.set(
-          storedCameraView.position.x,
-          storedCameraView.position.y,
-          storedCameraView.position.z,
-        )
-        controls.target.set(
-          storedCameraView.target.x,
-          storedCameraView.target.y,
-          storedCameraView.target.z,
-        )
+        applyCameraView(storedCameraView)
       } else if (stageCameraTarget && stageCameraPosition) {
-        camera.position.copy(stageCameraPosition)
-        controls.target.copy(stageCameraTarget)
+        applyCameraView({
+          position: {
+            x: stageCameraPosition.x,
+            y: stageCameraPosition.y,
+            z: stageCameraPosition.z,
+          },
+          target: {
+            x: stageCameraTarget.x,
+            y: stageCameraTarget.y,
+            z: stageCameraTarget.z,
+          },
+        })
       }
-      controls.update()
     }
-    controls.addEventListener('change', scheduleSaveCameraView)
+    controls.addEventListener('change', handleControlsChange)
 
     renderer.domElement.addEventListener('pointerdown', onPointerDown)
     window.addEventListener('resize', onResize)
@@ -1471,7 +1626,10 @@ export function useVrmStage(options: UseVrmStageOptions) {
         actor.root.position.lerp(actor.targetPosition, 0.08)
         actor.root.position.y = actor.targetPosition.y + jumpLift
       }
-      controls?.update()
+      updateCameraFocus(stepDelta)
+      if (!isCameraFocusing()) {
+        controls?.update()
+      }
       if (scene && camera) {
         renderer?.render(scene, camera)
         labelRenderer?.render(scene, camera)
@@ -1490,7 +1648,7 @@ export function useVrmStage(options: UseVrmStageOptions) {
     window.removeEventListener('keydown', onKeyDown)
     window.removeEventListener('session-stage:sidebar-session-click', handleSidebarSessionClick as EventListener)
     renderer?.domElement.removeEventListener('pointerdown', onPointerDown)
-    controls?.removeEventListener('change', scheduleSaveCameraView)
+    controls?.removeEventListener('change', handleControlsChange)
     if (cameraViewSaveTimer !== null) {
       window.clearTimeout(cameraViewSaveTimer)
       cameraViewSaveTimer = null
@@ -1553,6 +1711,11 @@ export function useVrmStage(options: UseVrmStageOptions) {
     stageCameraPosition = null
     stageWorldCenter = null
     stageWorldSize = null
+    cameraFocusSessionId = ''
+    cameraFocusSavedView = null
+    cameraFocusDesiredView = null
+    cameraFocusRestoring = false
+    suppressCameraViewSave = false
 
     controls?.dispose()
     renderer?.dispose()
@@ -1580,15 +1743,17 @@ export function useVrmStage(options: UseVrmStageOptions) {
 
   watch(
     () => options.selectedChatSessionId.value,
-    () => {
-      updateAllHeadLabels()
+    (sessionId) => {
+      handleCameraFocusSessionChange(sessionId)
     },
+    { immediate: true },
   )
 
   watch(
     () => options.visibleSessions.value,
     () => {
       void syncActorsWithSessions()
+      updateCameraFocusTarget()
     },
     { deep: true },
   )

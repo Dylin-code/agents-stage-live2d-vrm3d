@@ -396,6 +396,49 @@ class SessionBridgeServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["messages"][1]["role"], "assistant")
         self.assertEqual(payload["messages"][1]["content"], "收到，我先檢查重連流程。")
 
+    async def test_get_conversation_unwraps_persona_prompt_envelope(self) -> None:
+        session_id = "00000000-0000-0000-0000-000000000017"
+        wrapped_prompt = json.dumps(
+            {
+                "schema": "session_bridge_user_input_v1",
+                "plan_mode": False,
+                "personality": {
+                    "id": "persona-1",
+                    "name": "冷靜 PM",
+                    "content": "請條理分明地回覆。",
+                },
+                "user_input": "幫我整理今天要改的檔案",
+                "instructions": [],
+            },
+            ensure_ascii=False,
+        )
+        with TemporaryDirectory() as codex_dir, TemporaryDirectory() as claude_dir:
+            self.service.session_dir = Path(codex_dir)
+            self.service.claude_session_dir = Path(claude_dir)
+            file_path = self.service.session_dir / "2026" / "03" / "08" / f"{session_id}.jsonl"
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(
+                "\n".join(
+                    [
+                        json.dumps({
+                            "timestamp": "2026-03-08T10:40:00Z",
+                            "type": "event_msg",
+                            "payload": {
+                                "type": "user_message",
+                                "message": wrapped_prompt,
+                            },
+                        }, ensure_ascii=False),
+                    ]
+                ) + "\n",
+                encoding="utf-8",
+            )
+            payload = await self.service.get_conversation(session_id, limit=50)
+            history = await self.service.get_history(limit=50)
+        self.assertEqual(payload["messages"][0]["content"], "幫我整理今天要改的檔案")
+        self.assertEqual(history["sessions"][0]["display_name"], "幫我整理今天要改的檔案")
+        self.assertEqual(history["sessions"][0]["context"]["persona_id"], "persona-1")
+        self.assertEqual(history["sessions"][0]["context"]["persona_name"], "冷靜 PM")
+
     async def test_history_title_ignores_auto_injected_bootstrap_prompt(self) -> None:
         session_id = "00000000-0000-0000-0000-000000000011"
         with TemporaryDirectory() as codex_dir, TemporaryDirectory() as claude_dir:
@@ -1252,6 +1295,36 @@ class BridgeCodexChatApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["session_id"], fake_payload["session_id"])
         self.assertEqual(payload["cwd"], "/tmp/work")
         self.assertEqual(payload["agent_brand"], "codex")
+
+    async def test_bridge_codex_new_session_persists_persona_context(self) -> None:
+        fake_payload = {
+            "session_id": "00000000-0000-0000-0000-000000000302",
+            "cwd": "/tmp/work",
+            "branch": "main",
+            "model": "gpt-5-codex",
+            "effort": "medium",
+            "permission_mode": "default",
+            "approval_policy": "on-request",
+            "sandbox_mode": "workspace-write",
+            "plan_mode": False,
+            "plan_mode_fallback": False,
+        }
+        with patch(
+            "live2d_server.session_bridge.codex_chat_service.create_session",
+            new=AsyncMock(return_value=fake_payload),
+        ):
+            with patch("live2d_server.session_bridge.bridge_service.upsert_runtime_context", new=AsyncMock()) as upsert_mock:
+                payload = await bridge_codex_new_session(
+                    CodexNewSessionRequest(
+                        cwd="/tmp/work",
+                        persona_id="persona-1",
+                        persona_name="冷靜 PM",
+                        persona_content="請條理分明地回覆。",
+                    )
+                )
+        upsert_mock.assert_awaited_once()
+        self.assertEqual(payload["persona_id"], "persona-1")
+        self.assertEqual(payload["persona_name"], "冷靜 PM")
 
     async def test_bridge_codex_new_session_request_permission_mode_overrides_history_runtime(self) -> None:
         fake_payload = {

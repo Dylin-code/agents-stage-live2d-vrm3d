@@ -106,12 +106,34 @@
             <option v-for="f in vrmaFiles" :key="'enter-' + f" :value="f">{{ f }}</option>
           </select>
         </div>
-        <div class="bf-step-param-row">
+        <div class="bf-step-param-row bf-step-param-row-loop-sequence">
           <label class="bf-label">持續動畫</label>
-          <select v-model="step.interactLoopVrma" class="bf-select" @change="emitUpdate">
-            <option value="">預設</option>
-            <option v-for="f in vrmaFiles" :key="'loop-' + f" :value="f">{{ f }}</option>
-          </select>
+          <div class="bf-loop-sequence-list">
+            <div
+              v-for="(segment, segmentIdx) in getInteractLoopSequence(step)"
+              :key="`${step.id}-loop-${segmentIdx}`"
+              class="bf-loop-sequence-item"
+            >
+              <select v-model="segment.vrmaFile" class="bf-select" @change="syncInteractLoopLegacy(step); emitUpdate()">
+                <option value="">請選擇</option>
+                <option v-for="f in vrmaFiles" :key="'loop-' + f" :value="f">{{ f }}</option>
+              </select>
+              <label class="bf-label bf-label-inline">秒數</label>
+              <input
+                v-model.number="segment.durationSeconds"
+                type="number"
+                min="0.5"
+                step="0.5"
+                class="bf-input bf-input-sm bf-loop-duration-input"
+                @change="normalizeInteractLoopSegment(segment); syncInteractLoopLegacy(step); emitUpdate()"
+              />
+              <button type="button" class="bf-btn-icon bf-btn-icon-danger" title="刪除持續動畫" @click="removeInteractLoopSegment(step, segmentIdx)">✕</button>
+            </div>
+            <div v-if="!getInteractLoopSequence(step).length" class="bf-loop-sequence-empty">
+              未設定時會沿用互動點預設持續動畫
+            </div>
+            <button type="button" class="bf-btn-pick" @click="addInteractLoopSegment(step)">+ 新增持續動畫</button>
+          </div>
         </div>
         <div class="bf-step-param-row">
           <label class="bf-label">離開動畫</label>
@@ -242,7 +264,7 @@
 
 <script setup lang="ts">
 import { ref, watch, onMounted } from 'vue'
-import type { BehaviorFlowStep, FlowMoveTarget, FlowInteractTarget } from './vrmBehaviorFlowConfigUtils'
+import type { BehaviorFlowStep, FlowInteractTarget, FlowLoopMotionSegment, FlowMoveTarget } from './vrmBehaviorFlowConfigUtils'
 import { getAvailableVrmaFiles, fetchAvailableVrmaFiles, generateStepId } from './vrmBehaviorFlowConfigUtils'
 import type { InteractionPoint } from './vrmInteractionPointUtils'
 
@@ -307,6 +329,44 @@ function getInteractTarget(step: BehaviorFlowStep): FlowInteractTarget {
     step.interactTarget = { mode: 'nearest', pointType: 'sit' }
   }
   return step.interactTarget
+}
+
+function normalizeInteractLoopSegment(segment: FlowLoopMotionSegment): void {
+  segment.vrmaFile = String(segment.vrmaFile || '').trim()
+  segment.durationSeconds = Math.max(0.5, Number(segment.durationSeconds) || 4)
+}
+
+function syncInteractLoopLegacy(step: BehaviorFlowStep): void {
+  const sequence = step.interactLoopSequence?.filter((segment) => segment.vrmaFile && segment.vrmaFile.trim()) || []
+  step.interactLoopVrma = sequence[0]?.vrmaFile || undefined
+}
+
+function getInteractLoopSequence(step: BehaviorFlowStep): FlowLoopMotionSegment[] {
+  if (!step.interactLoopSequence) {
+    step.interactLoopSequence = step.interactLoopVrma
+      ? [{ vrmaFile: step.interactLoopVrma, durationSeconds: 4 }]
+      : []
+  }
+  step.interactLoopSequence.forEach((segment) => normalizeInteractLoopSegment(segment))
+  syncInteractLoopLegacy(step)
+  return step.interactLoopSequence
+}
+
+function addInteractLoopSegment(step: BehaviorFlowStep): void {
+  const sequence = getInteractLoopSequence(step)
+  sequence.push({
+    vrmaFile: vrmaFiles.value[0] || step.interactLoopVrma || 'Thinking.vrma',
+    durationSeconds: 4,
+  })
+  syncInteractLoopLegacy(step)
+  emitUpdate()
+}
+
+function removeInteractLoopSegment(step: BehaviorFlowStep, idx: number): void {
+  const sequence = getInteractLoopSequence(step)
+  sequence.splice(idx, 1)
+  syncInteractLoopLegacy(step)
+  emitUpdate()
 }
 
 function getMotionOffset(step: BehaviorFlowStep): { x: number; y: number; z: number } {
@@ -517,6 +577,10 @@ function moveStep(idx: number, direction: -1 | 1): void {
   flex-shrink: 0;
 }
 
+.bf-label-inline {
+  min-width: auto;
+}
+
 .bf-label-check {
   display: flex;
   align-items: center;
@@ -604,6 +668,35 @@ function moveStep(idx: number, direction: -1 | 1): void {
   margin: 4px 0 2px;
   border-top: 1px solid rgba(182, 212, 248, 0.08);
   padding-top: 4px;
+}
+
+.bf-step-param-row-loop-sequence {
+  align-items: flex-start;
+}
+
+.bf-loop-sequence-list {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bf-loop-sequence-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.bf-loop-duration-input {
+  width: 84px;
+}
+
+.bf-loop-sequence-empty {
+  font-size: 10px;
+  opacity: 0.55;
+  font-style: italic;
 }
 
 .bf-btn-pick {

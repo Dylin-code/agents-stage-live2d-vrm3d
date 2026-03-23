@@ -128,4 +128,48 @@ describe('sessionStageChatAgentUtils', () => {
     expect(selectedChatSessionId.value).toBe('s1')
     expect(chatConversation.value.key).toBe('s1')
   })
+
+  it('hydrates persona fields from session context', () => {
+    const sessionStore: Record<string, SessionSnapshotItem> = {
+      s1: {
+        ...createSession('s1', 'Session 1'),
+        context: {
+          persona_id: 'persona-1',
+          persona_name: '冷靜 PM',
+          persona_content: '請條理清楚地回覆。',
+        },
+      },
+    }
+
+    const utils = createSessionStageChatAgentUtils({
+      storageKeyConversations: 'test-conversations-3',
+      conversationLimit: 20,
+      conversationSyncDebounceMs: 0,
+      serverUrl: () => '',
+      sessionStore,
+      sessionAgentOptionsBySession: {},
+      selectedChatSessionId: ref(''),
+      chatModalVisible: ref(false),
+      chatConversation: ref<Conversation>({
+        key: '',
+        label: '',
+        messages: [],
+        createdAt: 0,
+        updatedAt: 0,
+        group: undefined,
+      }),
+      chatSystemSettings: ref<SystemSettings>({} as SystemSettings),
+      conversationSyncTimers: new Map<string, number>(),
+      conversationSyncRunning: new Set<string>(),
+      conversationSyncQueued: new Set<string>(),
+      ensureSessionVisible: () => {},
+      syncActorsWithVisibility: () => {},
+      getBrandModels: () => [],
+    })
+
+    const options = utils.buildSessionAgentOptions(sessionStore.s1)
+    expect(options.persona_id).toBe('persona-1')
+    expect(options.persona_name).toBe('冷靜 PM')
+    expect(options.persona_content).toBe('請條理清楚地回覆。')
+  })
 })

@@ -151,6 +151,14 @@ export function resolveFlowSteps(
         // 動畫覆寫（留空則 scheduler 會用互動點預設動畫）
         const enterVrma = fs.interactEnterVrma || undefined
         const loopVrma = fs.interactLoopVrma || undefined
+        const loopSequence = fs.interactLoopSequence?.length
+          ? fs.interactLoopSequence
+            .filter((segment) => segment.vrmaFile && segment.vrmaFile.trim())
+            .map((segment) => ({
+              vrmaFile: segment.vrmaFile.trim(),
+              durationMs: Math.max(0, Math.round((Number(segment.durationSeconds) || 0) * 1000)),
+            }))
+          : undefined
         const exitVrma = fs.interactExitVrma || undefined
         // 方向與 Z 校正覆寫
         const rotationYOverride = fs.interactRotationYOverride
@@ -164,6 +172,7 @@ export function resolveFlowSteps(
             target: { x: point.approachPosition.x, z: point.approachPosition.z },
             interactEnterVrma: enterVrma,
             interactLoopVrma: loopVrma,
+            interactLoopSequence: loopSequence,
             interactExitVrma: exitVrma,
             interactRotationYOverride: rotationYOverride,
             interactOffsetY: offsetY,
@@ -175,6 +184,7 @@ export function resolveFlowSteps(
             interactionPhase: 'enter',
             interactEnterVrma: enterVrma,
             interactLoopVrma: loopVrma,
+            interactLoopSequence: loopSequence,
             interactExitVrma: exitVrma,
             interactRotationYOverride: rotationYOverride,
             interactOffsetY: offsetY,
@@ -186,6 +196,7 @@ export function resolveFlowSteps(
             interactionPhase: 'loop',
             interactEnterVrma: enterVrma,
             interactLoopVrma: loopVrma,
+            interactLoopSequence: loopSequence,
             interactExitVrma: exitVrma,
           },
         )

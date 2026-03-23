@@ -161,6 +161,15 @@
           </div>
         </div>
         <div class="role-setting-item">
+          <button
+            type="button"
+            class="role-setting-behavior-flow-btn"
+            @click="openPersonaEditor"
+          >
+            角色個性編輯
+          </button>
+        </div>
+        <div class="role-setting-item">
           <div class="role-setting-header">
             <label>前端設定備份</label>
           </div>
@@ -203,6 +212,15 @@
         </div>
       </div>
     </div>
+
+    <Modal
+      v-model:open="personaEditorVisible"
+      title="角色個性編輯"
+      width="880px"
+      @ok="savePersonaCatalog"
+    >
+      <PersonaEditorPanel v-model:personas="personaEditorDrafts" :personas="personaEditorDrafts" />
+    </Modal>
 
     <button v-if="isPortraitMode" class="portrait-sidebar-toggle" type="button" @click="portraitSidebarVisible = !portraitSidebarVisible">
       ☰
@@ -274,6 +292,14 @@
           <input type="checkbox" v-model="newSessionForm.plan_mode">
           計劃模式
         </label>
+        <div class="new-session-controls">
+          <select v-model="newSessionForm.persona_id">
+            <option value="">角色個性: 無</option>
+            <option v-for="persona in availablePersonas" :key="persona.id" :value="persona.id">
+              角色個性: {{ persona.name }}
+            </option>
+          </select>
+        </div>
         <div class="new-session-actions">
           <button
             class="new-session-submit"
@@ -350,10 +376,12 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { message } from 'ant-design-vue'
+import { message, Modal } from 'ant-design-vue'
 
 import ChatPage from '../chat.vue'
+import PersonaEditorPanel from './PersonaEditorPanel.vue'
 import { useSessionStage, type SessionStageRenderer } from '../../pages/session-stage/useSessionStage'
+import type { CharacterPersona } from '../../types/message'
 import type { SessionSnapshotItem } from '../../types/sessionState'
 import {
   VRM_ACTOR_SCALE_DEFAULT,
@@ -406,6 +434,8 @@ const vrmActorScale = ref(VRM_ACTOR_SCALE_DEFAULT)
 const vrmActorSlotOptions = DEFAULT_VRM_ACTOR_SLOT_OPTIONS
 const vrmActorSlotConfig = ref<string[]>(loadVrmActorSlotConfig(vrmActorSlotOptions))
 const frontendConfigFileInput = ref<HTMLInputElement | null>(null)
+const personaEditorVisible = ref(false)
+const personaEditorDrafts = ref<CharacterPersona[]>([])
 
 const vrmGlobalGroundOffsetLabel = computed(() => `${(vrmGlobalGroundOffset.value * 100).toFixed(1)} cm`)
 const vrmActorScaleLabel = computed(() => `${Math.round(vrmActorScale.value * 100)}%`)
@@ -493,6 +523,26 @@ function toggleInteractionEditor(): void {
 function reloadInteractionPoints(): void {
   roleSettingsCollapsed.value = true
   window.dispatchEvent(new CustomEvent(VRM_INTERACTION_POINTS_RELOAD_EVENT))
+}
+
+function openPersonaEditor(): void {
+  personaEditorDrafts.value = availablePersonas.value.map((item) => ({ ...item }))
+  personaEditorVisible.value = true
+}
+
+function savePersonaCatalog(): void {
+  saveChatSystemSettings({
+    ...chatSystemSettings.value,
+    assistantSettings: {
+      ...chatSystemSettings.value.assistantSettings,
+      personas: personaEditorDrafts.value.map((item) => ({ ...item })),
+    },
+  })
+  if (newSessionForm.persona_id && !personaEditorDrafts.value.some((item) => item.id === newSessionForm.persona_id)) {
+    newSessionForm.persona_id = ''
+  }
+  personaEditorVisible.value = false
+  message.success('角色個性設定已更新')
 }
 
 function downloadJsonFile(filename: string, payload: string): void {
@@ -632,6 +682,7 @@ const {
   onNewSessionCwdSelectionChange,
   newSessionCwdOptions,
   newSessionForm,
+  availablePersonas,
   agentBrandOptions,
   newSessionModelOptions,
   creatingNewSession,
@@ -649,6 +700,7 @@ const {
   openSessionChatBySessionId,
   handleChatConversationUpdate,
   chatSystemSettings,
+  saveChatSystemSettings,
   activeChatAgentOptions,
   handleActiveSessionAgentOptionsChange,
   refreshActiveSessionBranches,

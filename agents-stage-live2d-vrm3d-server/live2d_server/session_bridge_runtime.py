@@ -20,7 +20,9 @@ from .session_bridge_shared import (
     _basename_from_cwd,
     _claude_model_context_window,
     _env_bool,
+    _extract_prompt_persona,
     _extract_message_content,
+    _extract_visible_user_input,
     _is_auto_injected_message,
     _iso_now,
     _normalize_permission_mode,
@@ -354,6 +356,9 @@ class SessionBridgeService:
                 model_context_window=session.model_context_window,
                 primary_rate_remaining_percent=session.primary_rate_remaining_percent,
                 secondary_rate_remaining_percent=session.secondary_rate_remaining_percent,
+                persona_id=session.persona_id,
+                persona_name=session.persona_name,
+                persona_content=session.persona_content,
                 last_event_type=session.last_event_type,
                 has_real_user_input=session.has_real_user_input,
             )
@@ -367,6 +372,9 @@ class SessionBridgeService:
         branch: Optional[str] = None,
         model: Optional[str] = None,
         effort: Optional[str] = None,
+        persona_id: Optional[str] = None,
+        persona_name: Optional[str] = None,
+        persona_content: Optional[str] = None,
         permission_mode: Optional[str] = None,
         approval_policy: Optional[str] = None,
         sandbox_mode: Optional[str] = None,
@@ -397,6 +405,12 @@ class SessionBridgeService:
                 session.model = str(model)
             if effort is not None:
                 session.effort = str(effort)
+            if persona_id is not None:
+                session.persona_id = str(persona_id).strip()
+            if persona_name is not None:
+                session.persona_name = str(persona_name).strip()
+            if persona_content is not None:
+                session.persona_content = str(persona_content)
             if permission_mode is not None:
                 session.permission_mode = _normalize_permission_mode(permission_mode)
             if approval_policy is not None:
@@ -536,7 +550,7 @@ class SessionBridgeService:
         ts, ts_epoch = parsed_ts
 
         if top_type == "event_msg" and str(payload.get("type") or "") == "user_message":
-            content = str(payload.get("message") or "").strip()
+            content = _extract_visible_user_input(payload.get("message"))
             if content:
                 if _is_auto_injected_message("user", content):
                     return None
@@ -554,6 +568,8 @@ class SessionBridgeService:
             if role not in {"user", "assistant"}:
                 return None
             content = _extract_message_content(payload)
+            if role == "user":
+                content = _extract_visible_user_input(content)
             if not content:
                 return None
             if _is_auto_injected_message(role, content):
@@ -629,6 +645,7 @@ class SessionBridgeService:
                                 ]
                                 content = " ".join(t for t in texts if t)
                             if isinstance(content, str) and content.strip():
+                                content = _extract_visible_user_input(content)
                                 if _is_auto_injected_message("user", content):
                                     seq += 1
                                     continue
@@ -712,6 +729,9 @@ class SessionBridgeService:
                 "context": {
                     "model": "",
                     "effort": "",
+                    "persona_id": "",
+                    "persona_name": "",
+                    "persona_content": "",
                     "permission_mode": PERMISSION_MODE_DEFAULT,
                     "approval_policy": "",
                     "sandbox_mode": "",
@@ -803,11 +823,23 @@ class SessionBridgeService:
         if title:
             record["display_name"] = title
         if top_type == "event_msg" and str(payload.get("type") or "") == "user_message":
-            user_message = str(payload.get("message") or "").strip()
+            raw_user_message = str(payload.get("message") or "")
+            user_message = _extract_visible_user_input(raw_user_message)
+            persona = _extract_prompt_persona(raw_user_message)
+            if persona:
+                context["persona_id"] = str(persona.get("id") or "")
+                context["persona_name"] = str(persona.get("name") or "")
+                context["persona_content"] = str(persona.get("content") or "")
             if user_message and not _is_auto_injected_message("user", user_message):
                 record["has_real_user_input"] = True
         elif top_type == "response_item" and str(payload.get("type") or "") == "message" and str(payload.get("role") or "") == "user":
-            user_content = _extract_message_content(payload)
+            raw_user_content = _extract_message_content(payload)
+            user_content = _extract_visible_user_input(raw_user_content)
+            persona = _extract_prompt_persona(raw_user_content)
+            if persona:
+                context["persona_id"] = str(persona.get("id") or "")
+                context["persona_name"] = str(persona.get("name") or "")
+                context["persona_content"] = str(persona.get("content") or "")
             if user_content and not _is_auto_injected_message("user", user_content):
                 record["has_real_user_input"] = True
 
@@ -1053,7 +1085,12 @@ class SessionBridgeService:
                     ]
                     content = " ".join(t for t in texts if t)
                 if isinstance(content, str) and content.strip():
-                    cleaned = WHITESPACE_PATTERN.sub(" ", content).strip()
+                    persona = _extract_prompt_persona(content)
+                    if persona:
+                        session.persona_id = str(persona.get("id") or "")
+                        session.persona_name = str(persona.get("name") or "")
+                        session.persona_content = str(persona.get("content") or "")
+                    cleaned = WHITESPACE_PATTERN.sub(" ", _extract_visible_user_input(content)).strip()
                     if not _is_auto_injected_message("user", cleaned):
                         session.has_real_user_input = True
                         if len(cleaned) > 42:
@@ -1140,7 +1177,7 @@ class SessionBridgeService:
 
             elif event_type == "summary":
                 # Claude sometimes writes a summary entry with the conversation title
-                summary_text = str(event.get("summary") or "").strip()
+                summary_text = _extract_visible_user_input(event.get("summary"))
                 if summary_text:
                     if not _is_auto_injected_message("user", summary_text) and not _is_auto_injected_message("assistant", summary_text):
                         session.has_real_user_input = True
@@ -1150,7 +1187,13 @@ class SessionBridgeService:
 
             elif event_type in {"last-prompt", "last_prompt"}:
                 # Claude persists a rolling lastPrompt near file tail; prefer it as latest user-facing title.
-                last_prompt = str(event.get("lastPrompt") or event.get("last_prompt") or "").strip()
+                last_prompt_raw = str(event.get("lastPrompt") or event.get("last_prompt") or "").strip()
+                persona = _extract_prompt_persona(last_prompt_raw)
+                if persona:
+                    session.persona_id = str(persona.get("id") or "")
+                    session.persona_name = str(persona.get("name") or "")
+                    session.persona_content = str(persona.get("content") or "")
+                last_prompt = _extract_visible_user_input(last_prompt_raw)
                 if last_prompt:
                     if not _is_auto_injected_message("user", last_prompt):
                         session.has_real_user_input = True
@@ -1160,7 +1203,13 @@ class SessionBridgeService:
 
             elif event_type == "queue-operation":
                 operation = str(event.get("operation") or "").strip().lower()
-                queued_content = str(event.get("content") or "").strip()
+                queued_content_raw = str(event.get("content") or "").strip()
+                persona = _extract_prompt_persona(queued_content_raw)
+                if persona:
+                    session.persona_id = str(persona.get("id") or "")
+                    session.persona_name = str(persona.get("name") or "")
+                    session.persona_content = str(persona.get("content") or "")
+                queued_content = _extract_visible_user_input(queued_content_raw)
                 if operation == "enqueue" and queued_content and not _is_auto_injected_message("user", queued_content):
                     session.has_real_user_input = True
                     if len(queued_content) > 42:
@@ -1288,11 +1337,23 @@ class SessionBridgeService:
             if title:
                 session.display_name = title
             if top_type == "event_msg" and event_type == "user_message":
-                user_message = str(payload.get("message") or "").strip()
+                raw_user_message = str(payload.get("message") or "")
+                user_message = _extract_visible_user_input(raw_user_message)
+                persona = _extract_prompt_persona(raw_user_message)
+                if persona:
+                    session.persona_id = str(persona.get("id") or "")
+                    session.persona_name = str(persona.get("name") or "")
+                    session.persona_content = str(persona.get("content") or "")
                 if user_message and not _is_auto_injected_message("user", user_message):
                     session.has_real_user_input = True
             elif top_type == "response_item" and event_type == "message" and str(payload.get("role") or "") == "user":
-                user_content = _extract_message_content(payload)
+                raw_user_content = _extract_message_content(payload)
+                user_content = _extract_visible_user_input(raw_user_content)
+                persona = _extract_prompt_persona(raw_user_content)
+                if persona:
+                    session.persona_id = str(persona.get("id") or "")
+                    session.persona_name = str(persona.get("name") or "")
+                    session.persona_content = str(persona.get("content") or "")
                 if user_content and not _is_auto_injected_message("user", user_content):
                     session.has_real_user_input = True
 
@@ -1392,7 +1453,7 @@ class SessionBridgeService:
                 payload.get("type"),
             )
 
-    def _extract_title(self, top_type: str, payload: dict[str, Any]) -> str:
+    def _extract_visible_user_message(self, top_type: str, payload: dict[str, Any]) -> str:
         text = ""
         payload_type = str(payload.get("type") or "")
         if top_type == "event_msg" and payload_type == "user_message":
@@ -1415,7 +1476,10 @@ class SessionBridgeService:
                     text = " ".join(chunks)
             if not text:
                 text = str(payload.get("message") or "")
-        cleaned = WHITESPACE_PATTERN.sub(" ", text).strip()
+        return _extract_visible_user_input(text)
+
+    def _extract_title(self, top_type: str, payload: dict[str, Any]) -> str:
+        cleaned = WHITESPACE_PATTERN.sub(" ", self._extract_visible_user_message(top_type, payload)).strip()
         if not cleaned:
             return ""
         if _is_auto_injected_message("user", cleaned):
@@ -1440,6 +1504,9 @@ class SessionBridgeService:
         return {
             "model": session.model,
             "effort": session.effort,
+            "persona_id": session.persona_id,
+            "persona_name": session.persona_name,
+            "persona_content": session.persona_content,
             "permission_mode": _normalize_permission_mode(session.permission_mode),
             "approval_policy": session.approval_policy,
             "sandbox_mode": session.sandbox_mode,

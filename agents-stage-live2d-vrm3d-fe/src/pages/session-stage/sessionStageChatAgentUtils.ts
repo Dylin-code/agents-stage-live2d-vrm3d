@@ -21,6 +21,9 @@ export interface SessionAgentUiOptions {
   available_branches?: string[]
   cwd?: string
   agent_brand?: string
+  persona_id?: string
+  persona_name?: string
+  persona_content?: string
 }
 
 export interface OpenSessionChatOptions {
@@ -99,6 +102,9 @@ export function createSessionStageChatAgentUtils(args: {
       available_branches: [],
       cwd: session?.cwd || '',
       agent_brand: brand,
+      persona_id: String(context.persona_id || ''),
+      persona_name: String(context.persona_name || ''),
+      persona_content: String(context.persona_content || ''),
     }
   }
 
@@ -128,6 +134,9 @@ export function createSessionStageChatAgentUtils(args: {
     }
     if (session.cwd) current.cwd = session.cwd
     if (!current.git_branch && session.branch) current.git_branch = session.branch
+    if (!current.persona_id && context.persona_id) current.persona_id = String(context.persona_id || '')
+    if (!current.persona_name && context.persona_name) current.persona_name = String(context.persona_name || '')
+    if (!current.persona_content && context.persona_content) current.persona_content = String(context.persona_content || '')
   }
 
   async function refreshSessionBranches(sessionId: string): Promise<void> {
@@ -180,6 +189,9 @@ export function createSessionStageChatAgentUtils(args: {
       if (options.reasoning_effort !== undefined) session.context = { ...(session.context || {}), effort: options.reasoning_effort || '' }
       if (options.permission_mode !== undefined) session.context = { ...(session.context || {}), permission_mode: options.permission_mode || 'default' }
       if (typeof options.plan_mode === 'boolean') session.context = { ...(session.context || {}), plan_mode: options.plan_mode }
+      if (options.persona_id !== undefined) session.context = { ...(session.context || {}), persona_id: options.persona_id || '' }
+      if (options.persona_name !== undefined) session.context = { ...(session.context || {}), persona_name: options.persona_name || '' }
+      if (options.persona_content !== undefined) session.context = { ...(session.context || {}), persona_content: options.persona_content || '' }
     }
     await switchSessionBranchIfNeeded(sessionId, options.git_branch || '', previousBranch)
   }

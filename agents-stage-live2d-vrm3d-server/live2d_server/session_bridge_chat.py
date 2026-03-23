@@ -15,6 +15,7 @@ from typing import Any, AsyncGenerator, Optional
 from .session_bridge_shared import (
     PERMISSION_MODE_DEFAULT,
     PERMISSION_MODE_FULL,
+    _build_session_bridge_prompt,
     _ensure_stream_reader_limit,
     _extract_message_content,
     _resolve_default_chat_cwd,
@@ -318,6 +319,9 @@ class CodexSessionChatService:
         approval_policy: Optional[str] = None,
         sandbox_mode: Optional[str] = None,
         plan_mode: Optional[bool] = None,
+        persona_id: Optional[str] = None,
+        persona_name: Optional[str] = None,
+        persona_content: Optional[str] = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         session_id_value = (session_id or "").strip()
         prompt_value = (prompt or "").strip()
@@ -333,16 +337,14 @@ class CodexSessionChatService:
             sandbox_mode=sandbox_mode,
         )
         require_bridge_approval = effective_permission_mode != PERMISSION_MODE_FULL
-        prompt_for_exec = prompt_value
-        plan_mode_fallback = False
-        if plan_mode is True:
-            # codex CLI 尚未穩定提供 plan mode 參數，先使用保守 fallback。
-            prompt_for_exec = (
-                "你現在必須先輸出完整實作計劃，暫時不要直接執行修改；"
-                "若資訊不足，先列出需確認項目。\n\n"
-                f"{prompt_value}"
-            )
-            plan_mode_fallback = True
+        prompt_for_exec = _build_session_bridge_prompt(
+            prompt_value,
+            persona_id=persona_id,
+            persona_name=persona_name,
+            persona_content=persona_content,
+            plan_mode=plan_mode,
+        )
+        plan_mode_fallback = bool(plan_mode)
         image_paths, created_images = await self._materialize_images(session_id_value, images or [])
         command = self._build_cli_command(
             session_id=session_id_value,

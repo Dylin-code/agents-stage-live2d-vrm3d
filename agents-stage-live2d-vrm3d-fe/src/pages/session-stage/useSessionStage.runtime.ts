@@ -4,7 +4,7 @@ import * as PIXI from 'pixi.js'
 import { Live2DModel as Live2DModelCubism4, MotionPreloadStrategy } from 'pixi-live2d-display/cubism4'
 import { Live2DModel as Live2DModelCubism2 } from 'pixi-live2d-display/cubism2'
 
-import type { Conversation, SystemSettings } from '../../types/message'
+import type { CharacterPersona, Conversation, SystemSettings } from '../../types/message'
 import type { AvatarActor, SessionHistoryItem, SessionSnapshotItem, SessionState, SessionStateEvent } from '../../types/sessionState'
 import {
   createAgentSession,
@@ -34,6 +34,7 @@ import type { OpenSessionChatOptions } from './sessionStageChatAgentUtils'
 import { getDefaultBridgeWsUrl, getDefaultServerUrl } from '../../utils/serverUrl'
 import { buildDefaultSystemSettings } from './sessionStageDefaults'
 import { createSessionStageModelCatalogUtils } from './sessionStageModelCatalogUtils'
+import { resolveSelectedCharacterPersona } from '../../utils/personas'
 import {
   normalizeMotionToken,
   type ModelMotionEntry,
@@ -123,6 +124,7 @@ const newSessionForm = reactive({
   permission_mode: 'default',
   plan_mode: false,
   agent_brand: 'codex' as string,
+  persona_id: '',
 })
 const chatConversation = ref<Conversation>({
   key: '',
@@ -258,6 +260,10 @@ const activeChatSessionCwd = computed(() => {
     return options.cwd_override
   }
   return options?.cwd || sessionStore[sessionId]?.cwd || ''
+})
+
+const availablePersonas = computed<CharacterPersona[]>(() => {
+  return chatSystemSettings.value.assistantSettings.personas || []
 })
 
 const activeCount = computed(() => visibleSessions.value.length)
@@ -502,6 +508,7 @@ const {
   applyModelPathsInput,
   isModelSelected,
   toggleModel,
+  saveSystemSettings,
   toAssetUrl,
 } = createSessionStageModelCatalogUtils({
   storageKey: STORAGE_KEY,
@@ -737,6 +744,7 @@ function resetNewSessionForm(): void {
   newSessionForm.permission_mode = 'default'
   newSessionForm.plan_mode = false
   newSessionForm.agent_brand = 'codex'
+  newSessionForm.persona_id = ''
 }
 
 function syncNewSessionCwdSelection(): void {
@@ -811,6 +819,7 @@ async function createNewSession(): Promise<void> {
   creatingNewSession.value = true
   try {
     const brand = newSessionForm.agent_brand || 'codex'
+    const selectedPersona = resolveSelectedCharacterPersona(availablePersonas.value, newSessionForm.persona_id)
     // Use unified agent endpoint for brand-aware session creation.
     const result = await createAgentSession(serverUrl, {
       cwd,
@@ -819,6 +828,9 @@ async function createNewSession(): Promise<void> {
       permission_mode: newSessionForm.permission_mode || 'default',
       plan_mode: newSessionForm.plan_mode,
       agent_brand: brand as any,
+      persona_id: selectedPersona?.id || '',
+      persona_name: selectedPersona?.name || '',
+      persona_content: selectedPersona?.content || '',
     })
     const sessionId = String(result.session_id || '').trim()
     if (!sessionId) {
@@ -845,6 +857,9 @@ async function createNewSession(): Promise<void> {
         sandbox_mode: String(result.sandbox_mode || ''),
         plan_mode: !!result.plan_mode,
         plan_mode_fallback: !!result.plan_mode_fallback,
+        persona_id: String(result.persona_id || selectedPersona?.id || ''),
+        persona_name: String(result.persona_name || selectedPersona?.name || ''),
+        persona_content: String(result.persona_content || selectedPersona?.content || ''),
       },
     }
     sessionStore[sessionId] = session
@@ -1080,6 +1095,7 @@ onUnmounted(() => {
     onNewSessionCwdSelectionChange,
     newSessionCwdOptions,
     newSessionForm,
+    availablePersonas,
     agentBrandOptions,
     newSessionModelOptions,
     creatingNewSession,
@@ -1097,6 +1113,7 @@ onUnmounted(() => {
     openSessionChatBySessionId,
     handleChatConversationUpdate,
     chatSystemSettings,
+    saveChatSystemSettings: saveSystemSettings,
     activeChatAgentOptions,
     handleActiveSessionAgentOptionsChange,
     refreshActiveSessionBranches,

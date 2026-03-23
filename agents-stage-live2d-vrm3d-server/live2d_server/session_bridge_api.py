@@ -128,6 +128,9 @@ def _read_history_runtime_snapshot(session_id: str) -> dict[str, Any]:
         "model_context_window": _safe_non_negative_int(context.get("model_context_window")),
         "primary_rate_remaining_percent": context.get("primary_rate_remaining_percent"),
         "secondary_rate_remaining_percent": context.get("secondary_rate_remaining_percent"),
+        "persona_id": str(context.get("persona_id") or ""),
+        "persona_name": str(context.get("persona_name") or ""),
+        "persona_content": str(context.get("persona_content") or ""),
     }
 
 
@@ -150,6 +153,9 @@ async def _ensure_session_record(session_id: str) -> Optional[_SessionRecord]:
         branch=str(item.get("branch") or ""),
         model=str(context.get("model") or ""),
         effort=str(context.get("effort") or ""),
+        persona_id=str(context.get("persona_id") or ""),
+        persona_name=str(context.get("persona_name") or ""),
+        persona_content=str(context.get("persona_content") or ""),
         permission_mode=_resolve_permission_mode(
             context.get("permission_mode"),
             approval_policy=context.get("approval_policy"),
@@ -193,6 +199,13 @@ async def _bridge_chat_with_service(
     effective_cwd = _resolve_session_cwd_for_brand(session, request.cwd_override, brand)
     effective_model = _resolve_runtime_value(request.model, session.model if session else "")
     effective_effort = _resolve_runtime_value(request.reasoning_effort, session.effort if session else "")
+    request_has_persona = any(
+        value is not None
+        for value in (request.persona_id, request.persona_name, request.persona_content)
+    )
+    effective_persona_id = str(request.persona_id or "").strip() if request_has_persona else str(session.persona_id if session else "")
+    effective_persona_name = str(request.persona_name or "").strip() if request_has_persona else str(session.persona_name if session else "")
+    effective_persona_content = str(request.persona_content or "") if request_has_persona else str(session.persona_content if session else "")
     requested_mode = request.permission_mode if request.permission_mode is not None and str(request.permission_mode).strip() else None
     session_mode = session.permission_mode if (session and str(session.permission_mode or "").strip()) else None
     mode_source = requested_mode if requested_mode is not None else session_mode
@@ -248,6 +261,9 @@ async def _bridge_chat_with_service(
                 approval_policy=effective_approval_policy or None,
                 sandbox_mode=effective_sandbox_mode or None,
                 plan_mode=effective_plan_mode,
+                persona_id=effective_persona_id,
+                persona_name=effective_persona_name,
+                persona_content=effective_persona_content,
             ):
                 if event.get("type") == "context" and isinstance(event.get("content"), dict):
                     # Merge (not overwrite) so earlier fields (model_context_window)
@@ -280,6 +296,24 @@ async def _bridge_chat_with_service(
                 history_runtime.get("effort")
                 or runtime_context.get("effort")
                 or effective_effort
+                or ""
+            )
+            runtime_persona_id = str(
+                history_runtime.get("persona_id")
+                or runtime_context.get("persona_id")
+                or effective_persona_id
+                or ""
+            )
+            runtime_persona_name = str(
+                history_runtime.get("persona_name")
+                or runtime_context.get("persona_name")
+                or effective_persona_name
+                or ""
+            )
+            runtime_persona_content = str(
+                history_runtime.get("persona_content")
+                or runtime_context.get("persona_content")
+                or effective_persona_content
                 or ""
             )
             if requested_mode is not None:
@@ -339,6 +373,9 @@ async def _bridge_chat_with_service(
                 branch=branch or None,
                 model=runtime_model or None,
                 effort=runtime_effort or None,
+                persona_id=runtime_persona_id,
+                persona_name=runtime_persona_name,
+                persona_content=runtime_persona_content,
                 permission_mode=runtime_permission_mode,
                 approval_policy=runtime_approval or None,
                 sandbox_mode=runtime_sandbox or None,
@@ -351,6 +388,9 @@ async def _bridge_chat_with_service(
                 "cwd": runtime_cwd,
                 "model": runtime_model,
                 "effort": runtime_effort,
+                "persona_id": runtime_persona_id,
+                "persona_name": runtime_persona_name,
+                "persona_content": runtime_persona_content,
                 "permission_mode": runtime_permission_mode,
                 "approval_policy": runtime_approval,
                 "sandbox_mode": runtime_sandbox,
@@ -445,6 +485,9 @@ async def bridge_codex_new_session(request: AgentNewSessionRequest) -> dict[str,
         branch=payload.get("branch"),
         model=payload.get("model"),
         effort=payload.get("effort"),
+        persona_id=request.persona_id if request.persona_id is not None else "",
+        persona_name=request.persona_name if request.persona_name is not None else "",
+        persona_content=request.persona_content if request.persona_content is not None else "",
         permission_mode=payload.get("permission_mode"),
         approval_policy=payload.get("approval_policy"),
         sandbox_mode=payload.get("sandbox_mode"),
@@ -452,6 +495,9 @@ async def bridge_codex_new_session(request: AgentNewSessionRequest) -> dict[str,
         plan_mode_fallback=payload.get("plan_mode_fallback"),
         agent_brand=AGENT_BRAND_CODEX,
     )
+    payload["persona_id"] = str(request.persona_id or "")
+    payload["persona_name"] = str(request.persona_name or "")
+    payload["persona_content"] = str(request.persona_content or "")
     return payload
 
 
@@ -567,6 +613,9 @@ async def bridge_agent_new_session(request: AgentNewSessionRequest) -> dict[str,
         payload["session_id"],
         cwd=payload.get("cwd"), branch=payload.get("branch"),
         model=payload.get("model"), effort=payload.get("effort"),
+        persona_id=request.persona_id if request.persona_id is not None else "",
+        persona_name=request.persona_name if request.persona_name is not None else "",
+        persona_content=request.persona_content if request.persona_content is not None else "",
         permission_mode=payload.get("permission_mode"),
         approval_policy=payload.get("approval_policy"),
         sandbox_mode=payload.get("sandbox_mode"),
@@ -574,6 +623,9 @@ async def bridge_agent_new_session(request: AgentNewSessionRequest) -> dict[str,
         plan_mode_fallback=payload.get("plan_mode_fallback"),
         agent_brand=brand,
     )
+    payload["persona_id"] = str(request.persona_id or "")
+    payload["persona_name"] = str(request.persona_name or "")
+    payload["persona_content"] = str(request.persona_content or "")
     return payload
 
 

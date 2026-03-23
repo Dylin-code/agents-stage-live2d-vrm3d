@@ -14,6 +14,9 @@ export interface SessionRuntimeContext {
   model_context_window?: number
   primary_rate_remaining_percent?: number
   secondary_rate_remaining_percent?: number
+  persona_id?: string
+  persona_name?: string
+  persona_content?: string
 }
 
 export interface SessionStateMeta {
