@@ -160,6 +160,10 @@ export function createSessionStageActorRuntime(args: {
 
   let lastVisibilitySyncMs = 0
 
+  // Idle motion: play random motion if actor has no state update for 10s
+  const IDLE_MOTION_INTERVAL_MS = 10_000
+  const lastActivityAtBySession = new Map<string, number>()
+
   function getLayoutMetrics() {
     const bounds = getStageBounds()
     const count = Math.max(1, Math.min(maxSessions, getVisibleSessions().length))
@@ -455,6 +459,7 @@ export function createSessionStageActorRuntime(args: {
   function triggerActorRandomMotion(sessionId: string): void {
     const actor = actors.get(sessionId)
     if (!actor || actor.phase === 'exiting') return
+    lastActivityAtBySession.set(sessionId, Date.now())
     const randomMotion = pickRandomSupportedMotion(actor, modelMotionsByPath)
     if (randomMotion) {
       playActorMotionEntry(actor, randomMotion)
@@ -650,6 +655,7 @@ export function createSessionStageActorRuntime(args: {
         brand_badge: brandBadge,
       }
       actors.set(session.session_id, actor)
+      lastActivityAtBySession.set(session.session_id, Date.now())
       sessionModelAssignments.set(session.session_id, loadedModelPath)
       seatAssignments.set(session.session_id, seat)
       await loadModelMotionsForPath(loadedModelPath)
@@ -720,6 +726,7 @@ export function createSessionStageActorRuntime(args: {
       return
     }
     actor.phase = 'exiting'
+    lastActivityAtBySession.delete(sessionId)
     if (immediate) {
       actor.model.alpha = Math.min(actor.model.alpha, 0.01)
       if (actor.status_bubble) actor.status_bubble.alpha = actor.model.alpha
@@ -758,6 +765,16 @@ export function createSessionStageActorRuntime(args: {
     if (now - lastVisibilitySyncMs >= 1000) {
       syncActorsWithVisibility()
       lastVisibilitySyncMs = now
+    }
+    // Idle motion: trigger random motion for actors idle > 10s
+    for (const [sessionId, actor] of actors.entries()) {
+      if (actor.phase !== 'active') continue
+      const lastActivity = lastActivityAtBySession.get(sessionId) || 0
+      if (lastActivity > 0 && now - lastActivity >= IDLE_MOTION_INTERVAL_MS) {
+        lastActivityAtBySession.set(sessionId, now)
+        const randomMotion = pickRandomSupportedMotion(actor, modelMotionsByPath)
+        if (randomMotion) playActorMotionEntry(actor, randomMotion)
+      }
     }
     let removedActor = false
     for (const [sessionId, actor] of actors.entries()) {
@@ -921,6 +938,7 @@ export function createSessionStageActorRuntime(args: {
   function updateActorState(sessionId: string, state: SessionState, lastSeenAt: string, lastEventType?: string): void {
     const actor = actors.get(sessionId)
     if (!actor) return
+    lastActivityAtBySession.set(sessionId, Date.now())
     const previousState = actor.state
     actor.display_name = sessionStore[sessionId]?.display_name || actor.display_name
     actor.state = state
