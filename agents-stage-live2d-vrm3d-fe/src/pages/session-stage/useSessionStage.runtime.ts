@@ -1059,7 +1059,7 @@ onUnmounted(() => {
   seatAssignments.clear()
   seatReservations.clear()
   sessionModelAssignments.clear()
-  for (const timer of conversationSyncTimers.values()) {
+  for (const timer of Array.from(conversationSyncTimers.values())) {
     window.clearTimeout(timer)
   }
   conversationSyncTimers.clear()

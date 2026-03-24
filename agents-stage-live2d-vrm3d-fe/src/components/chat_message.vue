@@ -127,6 +127,7 @@ export default {
     font-size: 1em;
     line-height: 1.5;
     word-break: break-word;
+    white-space: pre-wrap;
 }
 
 .avatar {
@@ -150,6 +151,7 @@ export default {
     display: flex;
     align-items: center;
     gap: 8px;
+    white-space: pre-wrap;
 }
 
 .thinking-dots {

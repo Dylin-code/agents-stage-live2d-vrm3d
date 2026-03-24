@@ -14,6 +14,7 @@ from live2d_server.session_bridge import (
     AgentConversationRequest,
     AgentNewSessionRequest,
     AgentProviderRouter,
+    ClaudeSessionChatService,
     CodexChatApprovalRequest,
     CodexChatRequest,
     CodexConversationRequest,
@@ -1100,6 +1101,81 @@ class CodexSessionChatServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("tool_calls", event_types)
         self.assertIn("approval_request", event_types)
         self.assertIn("text", event_types)
+
+class ClaudeSessionChatServiceTest(unittest.IsolatedAsyncioTestCase):
+    async def test_stream_prompt_tolerates_dict_usage_and_max_tokens_payloads(self) -> None:
+        service = ClaudeSessionChatService(claude_bin="claude", idle_timeout_sec=5, max_timeout_sec=5, default_cwd="/tmp/workspace")
+        events = [
+            json.dumps(
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "result": "ok",
+                    "usage": {
+                        "input": {"tokens": 120},
+                        "output": {"tokens": 30},
+                        "cache_read": {"tokens": 50},
+                        "cache_creation": {"tokens": 10},
+                    },
+                    "max_tokens": {"value": 200000},
+                }
+            ).encode("utf-8")
+            + b"\n",
+        ]
+
+        async def _fake_create_subprocess_exec(*_args, **_kwargs):
+            return _FakeStreamProcess(stdout_lines=events, returncode=0, stderr=b"")
+
+        emitted: list[dict[str, object]] = []
+        with patch("live2d_server.session_bridge_claude_chat.asyncio.create_subprocess_exec", side_effect=_fake_create_subprocess_exec):
+            async for item in service.stream_prompt(
+                session_id="claude-session-1",
+                prompt="hello",
+                permission_mode="default",
+            ):
+                emitted.append(item)
+
+        self.assertEqual(emitted[0]["type"], "text")
+        context_events = [item for item in emitted if item.get("type") == "context"]
+        self.assertTrue(context_events)
+        last_context = context_events[-1].get("content") if isinstance(context_events[-1].get("content"), dict) else {}
+        self.assertEqual(last_context.get("total_tokens"), 210)
+        self.assertEqual(last_context.get("model_context_window"), 200000)
+
+    async def test_stream_prompt_reads_total_tokens_from_model_usage_result_payload(self) -> None:
+        service = ClaudeSessionChatService(claude_bin="claude", idle_timeout_sec=5, max_timeout_sec=5, default_cwd="/tmp/workspace")
+        events = [
+            json.dumps(
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "modelUsage": {
+                        "input_tokens": 1,
+                        "cache_creation_input_tokens": 161,
+                        "cache_read_input_tokens": 73204,
+                        "output_tokens": 1,
+                    },
+                }
+            ).encode("utf-8")
+            + b"\n",
+        ]
+
+        async def _fake_create_subprocess_exec(*_args, **_kwargs):
+            return _FakeStreamProcess(stdout_lines=events, returncode=0, stderr=b"")
+
+        emitted: list[dict[str, object]] = []
+        with patch("live2d_server.session_bridge_claude_chat.asyncio.create_subprocess_exec", side_effect=_fake_create_subprocess_exec):
+            async for item in service.stream_prompt(
+                session_id="claude-session-2",
+                prompt="hello",
+                permission_mode="default",
+            ):
+                emitted.append(item)
+
+        context_events = [item for item in emitted if item.get("type") == "context"]
+        self.assertTrue(context_events)
+        last_context = context_events[-1].get("content") if isinstance(context_events[-1].get("content"), dict) else {}
+        self.assertEqual(last_context.get("total_tokens"), 73367)
 
 
 class BridgeCodexChatApiTest(unittest.IsolatedAsyncioTestCase):

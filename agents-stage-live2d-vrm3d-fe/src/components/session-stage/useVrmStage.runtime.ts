@@ -470,7 +470,7 @@ export function useVrmStage(options: UseVrmStageOptions) {
     if (modelUrl) {
       return getRoutePointsByModel(modelUrl).length >= 2
     }
-    for (const routePoints of routePointsByModel.values()) {
+    for (const routePoints of Array.from(routePointsByModel.values())) {
       if (routePoints.length >= 2) return true
     }
     return false

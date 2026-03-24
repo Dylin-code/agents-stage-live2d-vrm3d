@@ -97,11 +97,12 @@ class ClaudeSessionChatService:
             approval_policy=approval_policy,
             sandbox_mode=sandbox_mode,
         )
-        # Images — Claude Code doesn't have a direct `-i` flag like Codex;
-        # we embed image references via a system prompt hint if needed.
-        # For now, skip image_paths (future: pass via --file or stdin).
-        # Prompt is the last positional argument.
-        cmd.append(prompt)
+        if image_paths:
+            # Use stream-json input to pass multimodal content (images + text) via stdin.
+            cmd.extend(["--input-format", "stream-json"])
+        else:
+            # Text-only: prompt is the last positional argument.
+            cmd.append(prompt)
         return cmd
 
     @staticmethod
@@ -123,6 +124,47 @@ class ClaudeSessionChatService:
             # Use bypassPermissions so CLI executes all tools automatically;
             # the bridge layer intercepts tool_call events and handles approval.
             cmd.extend(["--permission-mode", "bypassPermissions"])
+
+    # ------------------------------------------------------------------
+    # Multimodal stdin builder (stream-json input for images)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_multimodal_stdin(prompt: str, image_paths: list[str]) -> bytes:
+        """Build stream-json stdin payload containing image blocks + text.
+
+        Claude Code ``--input-format stream-json`` expects one JSON object per
+        line on stdin with the structure::
+
+            {"type": "user", "message": {"role": "user", "content": [...]}}
+
+        The ``content`` array may include ``image`` blocks (base64) followed
+        by a ``text`` block.
+        """
+        content_blocks: list[dict[str, Any]] = []
+        for img_path in image_paths:
+            path = Path(img_path)
+            if not path.exists() or not path.is_file():
+                continue
+            raw = path.read_bytes()
+            media_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+            content_blocks.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": media_type,
+                    "data": base64.b64encode(raw).decode("ascii"),
+                },
+            })
+        content_blocks.append({"type": "text", "text": prompt})
+        message = {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": content_blocks,
+            },
+        }
+        return (json.dumps(message, ensure_ascii=False) + "\n").encode("utf-8")
 
     # ------------------------------------------------------------------
     # Image support (matching Codex interface)
@@ -364,6 +406,7 @@ class ClaudeSessionChatService:
         plan_mode_fallback = bool(plan_mode)
 
         image_paths, created_images = await self._materialize_images(session_id_value, images or [])
+        has_images = bool(image_paths)
         command = self._build_cli_command(
             session_id=session_id_value,
             prompt=prompt_for_exec,
@@ -376,14 +419,26 @@ class ClaudeSessionChatService:
             sandbox_mode=sandbox_mode,
         )
 
+        # When images are present, build multimodal stdin payload.
+        stdin_data: Optional[bytes] = None
+        if has_images:
+            stdin_data = self._build_multimodal_stdin(prompt_for_exec, image_paths)
+
         try:
             process = await asyncio.create_subprocess_exec(
                 *command,
+                stdin=asyncio.subprocess.PIPE if has_images else None,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=effective_cwd,
                 env=self._build_claude_subprocess_env(),
             )
+            # Feed multimodal payload via stdin then close.
+            if stdin_data and process.stdin is not None:
+                process.stdin.write(stdin_data)
+                await process.stdin.drain()
+                process.stdin.close()
+                await process.stdin.wait_closed()
             _ensure_stream_reader_limit(process.stdout)
         except FileNotFoundError as exc:
             await self._cleanup_images(created_images)
@@ -392,6 +447,8 @@ class ClaudeSessionChatService:
         start_mono = time.monotonic()
         last_activity_mono = start_mono
         context_emitted = False
+        streamed_via_delta = False  # Track if content_block_delta streamed text for current turn
+        text_emitted = False  # Track if any text was emitted (avoid result event duplication)
 
         try:
             while True:
@@ -479,13 +536,34 @@ class ClaudeSessionChatService:
                         context_emitted = True
                     continue
 
-                # ---- assistant message → text (chunked for streaming) ----
+                # ---- content_block_delta (real-time streaming) ----
+                if event_type == "content_block_delta":
+                    delta = event.get("delta") if isinstance(event.get("delta"), dict) else {}
+                    delta_type = str(delta.get("type") or "")
+                    if delta_type == "text_delta":
+                        text = str(delta.get("text") or "")
+                        if text:
+                            streamed_via_delta = True
+                            text_emitted = True
+                            yield {"type": "text", "content": text}
+                    continue
+
+                # ---- content_block_start / content_block_stop ----
+                if event_type in ("content_block_start", "content_block_stop"):
+                    continue
+
+                # ---- assistant message → text (chunked for streaming fallback) ----
                 if event_type == "assistant":
-                    message_content = self._extract_assistant_text(event)
-                    if message_content:
-                        for chunk in self._chunk_text(message_content):
-                            yield {"type": "text", "content": chunk}
-                            await asyncio.sleep(0)  # yield control for SSE flush
+                    # If content_block_delta already streamed text incrementally,
+                    # skip re-sending the full message to avoid duplication.
+                    if not streamed_via_delta:
+                        message_content = self._extract_assistant_text(event)
+                        if message_content:
+                            text_emitted = True
+                            for chunk in self._chunk_text(message_content):
+                                yield {"type": "text", "content": chunk}
+                                await asyncio.sleep(0.03)  # real delay for SSE flush
+                    streamed_via_delta = False  # reset for next turn
                     # Emit per-turn token usage if available.
                     usage_ctx = self._extract_usage_context(event)
                     if usage_ctx:
@@ -512,11 +590,14 @@ class ClaudeSessionChatService:
                 if event_type == "message":
                     role = str(event.get("role") or "").lower()
                     if role == "assistant":
-                        text = self._extract_assistant_text(event)
-                        if text:
-                            for chunk in self._chunk_text(text):
-                                yield {"type": "text", "content": chunk}
-                                await asyncio.sleep(0)
+                        if not streamed_via_delta:
+                            text = self._extract_assistant_text(event)
+                            if text:
+                                text_emitted = True
+                                for chunk in self._chunk_text(text):
+                                    yield {"type": "text", "content": chunk}
+                                    await asyncio.sleep(0.03)
+                        streamed_via_delta = False
                         usage_ctx = self._extract_usage_context(event)
                         if usage_ctx:
                             yield {"type": "context", "content": usage_ctx}
@@ -584,39 +665,44 @@ class ClaudeSessionChatService:
 
                 # ---- result event → end of stream ----
                 if event_type == "result":
-                    # Extract final text if present.
-                    result_text = str(event.get("result") or "").strip()
-                    if result_text:
-                        yield {"type": "text", "content": result_text}
+                    # Only emit final text if nothing was already streamed via
+                    # content_block_delta or assistant events.
+                    if not text_emitted:
+                        result_text = str(event.get("result") or "").strip()
+                        if result_text:
+                            yield {"type": "text", "content": result_text}
                     # Extract token usage for context % display.
                     usage = event.get("usage") if isinstance(event.get("usage"), dict) else {}
+                    model_usage = event.get("modelUsage") if isinstance(event.get("modelUsage"), dict) else {}
+                    usage_payload = usage if isinstance(usage, dict) and usage else model_usage
                     total_tokens = None
-                    if isinstance(usage, dict):
-                        inp = usage.get("input_tokens") or usage.get("input") or 0
-                        out = usage.get("output_tokens") or usage.get("output") or 0
-                        cache_read = usage.get("cache_read_input_tokens") or usage.get("cache_read") or 0
-                        cache_create = usage.get("cache_creation_input_tokens") or usage.get("cache_creation") or 0
-                        total = int(inp) + int(out) + int(cache_read) + int(cache_create)
-                        if total > 0:
+                    if isinstance(usage_payload, dict) and usage_payload:
+                        total = self._coerce_usage_total(usage_payload)
+                        if total is None:
+                            total = self._coerce_non_negative_int(
+                                usage_payload.get("total_tokens") or usage_payload.get("total")
+                            )
+                        if total is not None and total > 0:
                             total_tokens = total
                     # Also check top-level total_tokens
                     if total_tokens is None:
-                        top_total = event.get("total_tokens")
-                        if top_total is not None:
-                            try:
-                                total_tokens = max(0, int(top_total))
-                            except (ValueError, TypeError):
-                                pass
+                        total_tokens = self._coerce_non_negative_int(event.get("total_tokens"))
                     # Model context window from result or session metadata.
                     model_context_window = None
                     for key in ("model_context_window", "context_window", "max_tokens"):
                         val = event.get(key)
                         if val is not None:
-                            try:
-                                model_context_window = max(0, int(val))
+                            model_context_window = self._coerce_non_negative_int(val)
+                            if model_context_window is not None:
                                 break
-                            except (ValueError, TypeError):
-                                continue
+                    self._log_result_event_schema(
+                        session_id_value,
+                        event,
+                        usage,
+                        model_usage,
+                        total_tokens,
+                        model_context_window,
+                    )
                     # Emit updated context with token data if we found any.
                     if total_tokens is not None or model_context_window is not None:
                         token_ctx: dict[str, Any] = {}
@@ -627,15 +713,7 @@ class ClaudeSessionChatService:
                         yield {"type": "context", "content": token_ctx}
                     continue
 
-                # ---- content_block_delta (partial streaming) ----
-                if event_type == "content_block_delta":
-                    delta = event.get("delta") if isinstance(event.get("delta"), dict) else {}
-                    delta_type = str(delta.get("type") or "")
-                    if delta_type == "text_delta":
-                        text = str(delta.get("text") or "").strip()
-                        if text:
-                            yield {"type": "text", "content": text}
-                    continue
+                # (content_block_delta / start / stop handled earlier above)
 
             stderr_text = ""
             if process.stderr is not None:
@@ -679,6 +757,114 @@ class ClaudeSessionChatService:
         return [c for c in chunks if c]
 
     @staticmethod
+    def _coerce_non_negative_int(value: Any) -> Optional[int]:
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return max(0, value)
+        if isinstance(value, float):
+            if not value == value:
+                return None
+            return max(0, int(value))
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return None
+            try:
+                return max(0, int(raw))
+            except ValueError:
+                try:
+                    return max(0, int(float(raw)))
+                except ValueError:
+                    return None
+        if isinstance(value, dict):
+            preferred_keys = (
+                "value",
+                "total",
+                "count",
+                "tokens",
+                "input_tokens",
+                "output_tokens",
+                "cache_read_input_tokens",
+                "cache_creation_input_tokens",
+                "max_tokens",
+                "context_window",
+                "model_context_window",
+            )
+            for key in preferred_keys:
+                if key not in value:
+                    continue
+                coerced = ClaudeSessionChatService._coerce_non_negative_int(value.get(key))
+                if coerced is not None:
+                    return coerced
+            for nested in value.values():
+                coerced = ClaudeSessionChatService._coerce_non_negative_int(nested)
+                if coerced is not None:
+                    return coerced
+        return None
+
+    @classmethod
+    def _coerce_usage_total(cls, usage: Any) -> Optional[int]:
+        if not isinstance(usage, dict):
+            return None
+        parts = (
+            usage.get("input_tokens", usage.get("input")),
+            usage.get("output_tokens", usage.get("output")),
+            usage.get("cache_read_input_tokens", usage.get("cache_read")),
+            usage.get("cache_creation_input_tokens", usage.get("cache_creation")),
+        )
+        values: list[int] = []
+        for part in parts:
+            coerced = cls._coerce_non_negative_int(part)
+            if coerced is not None:
+                values.append(coerced)
+        if values:
+            total = sum(values)
+            if total > 0:
+                return total
+        return cls._coerce_non_negative_int(usage.get("total_tokens", usage.get("total")))
+
+    @staticmethod
+    def _value_shape(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {str(key): type(item).__name__ for key, item in value.items()}
+        if isinstance(value, list):
+            return [type(item).__name__ for item in value[:5]]
+        return type(value).__name__
+
+    @classmethod
+    def _log_result_event_schema(
+        cls,
+        session_id: str,
+        event: dict[str, Any],
+        usage: Any,
+        model_usage: Any,
+        total_tokens: Optional[int],
+        model_context_window: Optional[int],
+    ) -> None:
+        suspicious_usage = isinstance(usage, dict) and any(isinstance(item, dict) for item in usage.values())
+        suspicious_model_usage = isinstance(model_usage, dict) and any(isinstance(item, dict) for item in model_usage.values())
+        suspicious_context = any(
+            isinstance(event.get(key), dict)
+            for key in ("model_context_window", "context_window", "max_tokens", "total_tokens")
+        )
+        if not suspicious_usage and not suspicious_model_usage and not suspicious_context and total_tokens is not None:
+            return
+        logger.warning(
+            "Claude result event schema session=%s keys=%s usage_shape=%s model_usage_shape=%s total_tokens_shape=%s max_tokens_shape=%s context_window_shape=%s model_context_window_shape=%s parsed_total_tokens=%s parsed_model_context_window=%s",
+            session_id,
+            sorted(str(key) for key in event.keys()),
+            cls._value_shape(usage),
+            cls._value_shape(model_usage),
+            cls._value_shape(event.get("total_tokens")),
+            cls._value_shape(event.get("max_tokens")),
+            cls._value_shape(event.get("context_window")),
+            cls._value_shape(event.get("model_context_window")),
+            total_tokens,
+            model_context_window,
+        )
+
+    @staticmethod
     def _extract_usage_context(event: dict[str, Any]) -> Optional[dict[str, Any]]:
         """Extract token usage from an assistant/message event's usage field.
 
@@ -694,13 +880,8 @@ class ClaudeSessionChatService:
                 usage = msg.get("usage")
             if not isinstance(usage, dict):
                 return None
-        inp = usage.get("input_tokens") or 0
-        out = usage.get("output_tokens") or 0
-        cache_read = usage.get("cache_read_input_tokens") or 0
-        cache_create = usage.get("cache_creation_input_tokens") or 0
-        try:
-            total = int(inp) + int(out) + int(cache_read) + int(cache_create)
-        except (ValueError, TypeError):
+        total = ClaudeSessionChatService._coerce_usage_total(usage)
+        if total is None:
             return None
         if total <= 0:
             return None

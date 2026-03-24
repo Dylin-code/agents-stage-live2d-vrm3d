@@ -266,8 +266,8 @@ export function createSessionStageActorRuntime(args: {
   }
 
   function nextAvailableSeat(): number | null {
-    const used = new Set<number>(seatAssignments.values())
-    for (const reservation of seatReservations.values()) used.add(reservation)
+    const used = new Set<number>(Array.from(seatAssignments.values()))
+    for (const reservation of Array.from(seatReservations.values())) used.add(reservation)
     for (let idx = 0; idx < maxSessions; idx += 1) {
       if (!used.has(idx)) return idx
     }
@@ -332,7 +332,7 @@ export function createSessionStageActorRuntime(args: {
 
   function syncActorsWithVisibility(): void {
     const visibleSet = new Set(getVisibleSessions().map((item) => item.session_id))
-    for (const [sessionId] of actors.entries()) {
+    for (const [sessionId] of Array.from(actors.entries())) {
       if (!visibleSet.has(sessionId)) beginActorExit(sessionId)
     }
     for (const session of getVisibleSessions()) {
@@ -742,7 +742,7 @@ export function createSessionStageActorRuntime(args: {
     reflowActiveActorSeats()
     const cell = getSeatCellSize()
     const activeCount = getVisibleSessions().length || 1
-    for (const actor of actors.values()) {
+    for (const actor of Array.from(actors.values())) {
       const target = getSeatPosition(actor.seat_index)
       actor.target_x = target.x
       actor.target_y = target.y
@@ -767,7 +767,7 @@ export function createSessionStageActorRuntime(args: {
       lastVisibilitySyncMs = now
     }
     // Idle motion: trigger random motion for actors idle > 10s
-    for (const [sessionId, actor] of actors.entries()) {
+    for (const [sessionId, actor] of Array.from(actors.entries())) {
       if (actor.phase !== 'active') continue
       const lastActivity = lastActivityAtBySession.get(sessionId) || 0
       if (lastActivity > 0 && now - lastActivity >= IDLE_MOTION_INTERVAL_MS) {
@@ -777,7 +777,7 @@ export function createSessionStageActorRuntime(args: {
       }
     }
     let removedActor = false
-    for (const [sessionId, actor] of actors.entries()) {
+    for (const [sessionId, actor] of Array.from(actors.entries())) {
       if (actor.phase === 'entering') {
         actor.model.x += (actor.target_x - actor.model.x) * 0.14
         actor.model.y += (actor.target_y - actor.model.y) * 0.14

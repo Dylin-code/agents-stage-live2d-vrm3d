@@ -75,7 +75,7 @@ export function mergeHistorySessions(
         }
     map.set(item.session_id, keep)
   }
-  return [...map.values()]
+  return Array.from(map.values())
     .sort(compareByLastSeenDesc)
     .slice(0, Math.max(1, limit))
 }
@@ -126,7 +126,7 @@ export function groupSessionsByCwd<T extends SessionHistoryLike>(
       sessions: [session],
     })
   }
-  return [...grouped.values()].sort((a, b) => {
+  return Array.from(grouped.values()).sort((a, b) => {
     const aTs = toEpoch(a.sessions[0]?.last_seen_at || '')
     const bTs = toEpoch(b.sessions[0]?.last_seen_at || '')
     return bTs - aTs

@@ -75,7 +75,7 @@ export function createVrmActorMovementUtils(args: {
   function getAvailableSeatIndexes(): number[] {
     const seats = getSeatPositions()
     const allIndexes = seats.map((_, idx) => idx)
-    const used = new Set(actorSeatIndexes.values())
+    const used = new Set(Array.from(actorSeatIndexes.values()))
     return allIndexes.filter((idx) => !used.has(idx))
   }
 

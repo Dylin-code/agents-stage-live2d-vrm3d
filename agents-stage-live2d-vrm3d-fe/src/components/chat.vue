@@ -191,22 +191,22 @@ interface AgentSessionUiOptions {
   persona_content?: string
 }
 
+function renderMarkdownBubble(content: string) {
+  return h(Typography, null, {
+    default: () => h('div', { innerHTML: md.render(content) }),
+  })
+}
+
 const roles: BubbleListProps['roles'] = {
   assistant: {
     placement: 'start',
     avatar: { icon: h(UserOutlined), style: { background: '#fde3cf' } },
-    messageRender: (content) =>
-      h(Typography, null, {
-        default: () => h('div', { innerHTML: md.render(content) }),
-      }),
+    messageRender: (content) => renderMarkdownBubble(content),
   },
   waiting_for_input: {
     placement: 'start',
     avatar: { icon: h(QuestionCircleOutlined), style: { background: '#fde3cf' } },
-    messageRender: (content) =>
-      h(Typography, null, {
-        default: () => h('div', { innerHTML: md.render(content) }),
-      }),
+    messageRender: (content) => renderMarkdownBubble(content),
   },
   tool: {
     placement: 'start',
@@ -228,6 +228,7 @@ const roles: BubbleListProps['roles'] = {
   user: {
     placement: 'end',
     avatar: { icon: h(UserOutlined), style: { background: '#fde3cf' } },
+    messageRender: (content) => renderMarkdownBubble(content),
   },
 }
 
