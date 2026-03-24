@@ -39,6 +39,7 @@ import {
   normalizeMotionToken,
   type ModelMotionEntry,
 } from './live2dMotionUtils'
+import { shouldHydrateConversationForEvent } from './sessionStageConversationSync'
 import { usePortraitMode } from './usePortraitMode'
 
 Live2DModelCubism4.registerTicker(PIXI.Ticker)
@@ -156,16 +157,6 @@ const bubbleColor: Record<SessionState, number> = {
 const BUBBLE_BOX_HEIGHT = 30
 const BUBBLE_TAIL_HEIGHT = 10
 const BUBBLE_HEAD_CLEARANCE = 8
-const conversationSyncEventTypes = new Set([
-  'user_message',
-  'agent_message',
-  'message',
-  'function_call_output',
-  'custom_tool_call',
-  'error',
-  'task_complete',
-])
-
 function sessionActivityEpoch(session: SessionSnapshotItem): number {
   return getSessionActivityEpoch(session)
 }
@@ -665,11 +656,10 @@ function applySessionState(event: SessionStateEvent): void {
   }
   syncActorsWithVisibility()
   actorRuntime.updateActorState(event.session_id, event.state, event.ts, event.meta?.last_event_type)
-  const eventType = normalizeMotionToken(event.meta?.last_event_type || '')
   if (
     chatModalVisible.value
     && selectedChatSessionId.value === event.session_id
-    && conversationSyncEventTypes.has(eventType)
+    && shouldHydrateConversationForEvent(event.meta?.last_event_type || '')
   ) {
     scheduleConversationHydration(event.session_id)
   }

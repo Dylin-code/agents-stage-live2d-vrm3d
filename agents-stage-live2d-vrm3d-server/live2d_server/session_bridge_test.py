@@ -564,6 +564,75 @@ class SessionBridgeServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(payload["messages"]), 1)
         self.assertEqual(payload["messages"][0]["content"], "請開始")
 
+    async def test_get_conversation_appends_in_memory_draft_until_file_catches_up(self) -> None:
+        session_id = "00000000-0000-0000-0000-000000000019"
+        with TemporaryDirectory() as codex_dir, TemporaryDirectory() as claude_dir:
+            self.service.session_dir = Path(codex_dir)
+            self.service.claude_session_dir = Path(claude_dir)
+            file_path = self.service.session_dir / "2026" / "03" / "08" / f"{session_id}.jsonl"
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(
+                "\n".join(
+                    [
+                        '{"timestamp":"2026-03-08T10:00:02Z","type":"event_msg","payload":{"type":"user_message","message":"請幫我說明"}}',
+                    ]
+                ) + "\n",
+                encoding="utf-8",
+            )
+            await self.service.append_conversation_draft(
+                session_id,
+                role="assistant",
+                content="第一句。",
+                timestamp="2026-03-08T10:00:03Z",
+            )
+            await self.service.append_conversation_draft(
+                session_id,
+                role="assistant",
+                content="第二句。",
+                timestamp="2026-03-08T10:00:04Z",
+            )
+            payload = await self.service.get_conversation(session_id, limit=50)
+        self.assertEqual(len(payload["messages"]), 2)
+        self.assertEqual(payload["messages"][1]["role"], "assistant")
+        self.assertEqual(payload["messages"][1]["content"], "第一句。第二句。")
+
+    async def test_lookup_claude_session_metadata_uses_common_project_root_cwd(self) -> None:
+        session_id = "00000000-0000-0000-0000-000000000020"
+        with TemporaryDirectory() as claude_dir:
+            self.service.claude_session_dir = Path(claude_dir)
+            project_dir = self.service.claude_session_dir / "-Users-dannylin-Desktop-agents-stage-live2d-vrm3d"
+            project_dir.mkdir(parents=True, exist_ok=True)
+            file_path = project_dir / f"{session_id}.jsonl"
+            file_path.write_text(
+                "\n".join(
+                    [
+                        json.dumps({
+                            "type": "user",
+                            "sessionId": session_id,
+                            "timestamp": "2026-03-25T10:00:00Z",
+                            "cwd": "/Users/dannylin/Desktop/agents-stage-live2d-vrm3d",
+                            "message": {"role": "user", "content": "請幫我修 bridge"},
+                        }, ensure_ascii=False),
+                        json.dumps({
+                            "type": "assistant",
+                            "sessionId": session_id,
+                            "timestamp": "2026-03-25T10:00:01Z",
+                            "cwd": "/Users/dannylin/Desktop/agents-stage-live2d-vrm3d/agents-stage-live2d-vrm3d-server",
+                            "message": {"role": "assistant", "model": "claude-opus-4-6", "content": "先看 server"},
+                        }, ensure_ascii=False),
+                    ]
+                ) + "\n",
+                encoding="utf-8",
+            )
+
+            payload = self.service.lookup_claude_session_metadata(session_id)
+
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertEqual(payload["cwd"], "/Users/dannylin/Desktop/agents-stage-live2d-vrm3d")
+        self.assertEqual(payload["cwd_basename"], "agents-stage-live2d-vrm3d")
+        self.assertEqual(payload["context"]["model"], "claude-opus-4-6")
+
     async def test_claude_ingest_does_not_use_auto_injected_text_as_display_name(self) -> None:
         session_id = "00000000-0000-0000-0000-000000000014"
         now = _now_iso()
@@ -837,6 +906,42 @@ class SessionBridgeServiceTest(unittest.IsolatedAsyncioTestCase):
         snapshot = await self.service.get_snapshot()
         self.assertEqual(len(snapshot["sessions"]), 1)
         self.assertEqual(snapshot["sessions"][0]["state"], "WAITING")
+
+    async def test_claude_ingest_broadcasts_session_state_event(self) -> None:
+        session_id = "00000000-0000-0000-0000-000000000020"
+        now = _now_iso()
+        with TemporaryDirectory() as temp_dir:
+            cursor = _FileCursor(
+                path=Path(temp_dir) / f"{session_id}.jsonl",
+                offset=0,
+                inode=1,
+                session_id=session_id,
+            )
+            line = json.dumps(
+                {
+                    "type": "assistant",
+                    "sessionId": session_id,
+                    "timestamp": now,
+                    "cwd": "/tmp/work",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "我先檢查 bridge 狀態"}],
+                        "stop_reason": None,
+                    },
+                },
+                ensure_ascii=False,
+            )
+            with patch.object(self.service, "_broadcast", new=AsyncMock()) as broadcast_mock:
+                await self.service._ingest_claude_line(line, cursor)
+
+        broadcast_mock.assert_awaited_once()
+        event = broadcast_mock.await_args.args[0]
+        self.assertEqual(event["event"], "session_state")
+        self.assertEqual(event["agent_brand"], "claude")
+        self.assertEqual(event["source"], "claude_jsonl")
+        self.assertEqual(event["session_id"], session_id)
+        self.assertEqual(event["state"], "RESPONDING")
+        self.assertEqual(event["meta"]["last_event_type"], "assistant_message")
 
 
 class CodexSessionChatServiceTest(unittest.IsolatedAsyncioTestCase):
@@ -1578,6 +1683,63 @@ class AgentProviderApiContractTest(unittest.IsolatedAsyncioTestCase):
         claude_service.submit_approval.assert_awaited_once()
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["agent_brand"], "claude")
+
+
+class SessionBridgeApiRecordResolutionTest(unittest.IsolatedAsyncioTestCase):
+    async def test_ensure_session_record_refreshes_claude_runtime_from_disk_metadata(self) -> None:
+        from live2d_server.session_bridge_api import _ensure_session_record
+
+        session_id = "556dd05b-8a72-4528-a3dc-1bcf7f0fd757"
+        service = SessionBridgeService()
+        service._sessions[session_id] = _SessionRecord(
+            session_id=session_id,
+            display_name="stale claude session",
+            cwd="/tmp/wrong-cwd",
+            agent_brand="claude",
+            originator="Claude Code",
+        )
+
+        claude_item = {
+            "session_id": session_id,
+            "display_name": "restored claude session",
+            "state": "IDLE",
+            "last_seen_at": "2026-03-25T10:00:00Z",
+            "last_seen_epoch": 1_774_397_200.0,
+            "originator": "Claude Code",
+            "cwd": "/tmp/correct-cwd",
+            "cwd_basename": "correct-cwd",
+            "last_event_type": "assistant_message",
+            "agent_brand": "claude",
+            "has_real_user_input": True,
+            "context": {
+                "model": "sonnet",
+                "effort": "",
+                "persona_id": "",
+                "persona_name": "",
+                "persona_content": "",
+                "permission_mode": "default",
+                "approval_policy": "",
+                "sandbox_mode": "",
+                "plan_mode": None,
+                "plan_mode_fallback": False,
+                "total_tokens": 0,
+                "model_context_window": 200000,
+                "primary_rate_remaining_percent": None,
+                "secondary_rate_remaining_percent": None,
+            },
+        }
+
+        with patch("live2d_server.session_bridge_api.bridge_service", service):
+            with patch.object(service, "_collect_history_from_files", return_value={}):
+                with patch.object(service, "lookup_claude_session_metadata", return_value=claude_item) as lookup_mock:
+                    session = await _ensure_session_record(session_id)
+
+        self.assertIsNotNone(session)
+        assert session is not None
+        self.assertEqual(session.cwd, "/tmp/correct-cwd")
+        self.assertEqual(session.display_name, "restored claude session")
+        self.assertEqual(session.agent_brand, "claude")
+        lookup_mock.assert_called_once_with(session_id)
 
 
 class BridgeConversationApiTest(unittest.IsolatedAsyncioTestCase):

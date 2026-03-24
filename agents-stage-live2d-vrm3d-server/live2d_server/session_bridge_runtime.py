@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import os.path
 import subprocess
 import time
 from pathlib import Path
@@ -123,6 +124,8 @@ class SessionBridgeService:
         self._claude_files: dict[str, _FileCursor] = {}  # Claude session file cursors
         self._sessions: dict[str, _SessionRecord] = {}
         self._sessions_lock = asyncio.Lock()
+        self._conversation_drafts: dict[str, dict[str, Any]] = {}
+        self._conversation_drafts_lock = asyncio.Lock()
 
         self._clients: set[WebSocket] = set()
         self._clients_lock = asyncio.Lock()
@@ -306,6 +309,9 @@ class SessionBridgeService:
             if deduped and deduped[-1]["role"] == item["role"] and deduped[-1]["content"] == item["content"]:
                 continue
             deduped.append(item)
+        draft = await self._get_conversation_draft(normalized_session_id)
+        if draft is not None and self._should_append_conversation_draft(deduped, draft):
+            deduped.append(draft)
         sliced = deduped[-safe_limit:]
         return {
             "version": "1",
@@ -363,6 +369,91 @@ class SessionBridgeService:
                 has_real_user_input=session.has_real_user_input,
             )
         return copied
+
+    async def reset_conversation_draft(self, session_id: str) -> None:
+        session_key = (session_id or "").strip()
+        if not session_key:
+            return
+        async with self._conversation_drafts_lock:
+            self._conversation_drafts.pop(session_key, None)
+
+    async def append_conversation_draft(
+        self,
+        session_id: str,
+        *,
+        role: str,
+        content: str,
+        timestamp: Optional[str] = None,
+    ) -> None:
+        session_key = (session_id or "").strip()
+        chunk = str(content or "")
+        draft_role = str(role or "").strip().lower()
+        if not session_key or not chunk or draft_role not in {"assistant", "user"}:
+            return
+        ts = _normalize_ts(timestamp) or _iso_now()
+        ts_epoch = _ts_to_epoch(ts)
+        if ts_epoch <= 0:
+            ts = _iso_now()
+            ts_epoch = _ts_to_epoch(ts)
+        async with self._conversation_drafts_lock:
+            existing = self._conversation_drafts.get(session_key)
+            if existing and str(existing.get("role") or "") == draft_role:
+                existing["content"] = str(existing.get("content") or "") + chunk
+                existing["timestamp"] = ts
+                existing["ts_epoch"] = ts_epoch
+            else:
+                self._conversation_drafts[session_key] = {
+                    "role": draft_role,
+                    "content": chunk,
+                    "timestamp": ts,
+                    "ts_epoch": ts_epoch,
+                    "seq": 10**12,
+                }
+
+    async def notify_conversation_updated(self, session_id: str, *, last_event_type: str) -> None:
+        session_key = (session_id or "").strip()
+        if not session_key:
+            return
+        now_ts = _iso_now()
+        now_epoch = _ts_to_epoch(now_ts)
+        async with self._sessions_lock:
+            session = self._sessions.get(session_key)
+            if session is None:
+                session = self._new_session(session_key, now_ts)
+                self._sessions[session_key] = session
+            session.last_event_type = str(last_event_type or session.last_event_type or "").strip()
+            session.last_seen_at = now_ts
+            session.last_seen_epoch = now_epoch
+            session.active = True
+            event = self._build_state_event(session)
+        await self._broadcast(event)
+
+    async def _get_conversation_draft(self, session_id: str) -> Optional[dict[str, Any]]:
+        async with self._conversation_drafts_lock:
+            draft = self._conversation_drafts.get(session_id)
+            if draft is None:
+                return None
+            return dict(draft)
+
+    @staticmethod
+    def _should_append_conversation_draft(messages: list[dict[str, Any]], draft: dict[str, Any]) -> bool:
+        content = str(draft.get("content") or "").strip()
+        role = str(draft.get("role") or "").strip().lower()
+        if not content or role not in {"assistant", "user"}:
+            return False
+        if not messages:
+            return True
+        last = messages[-1]
+        if str(last.get("role") or "").strip().lower() != role:
+            return True
+        last_content = str(last.get("content") or "")
+        if last_content == content:
+            return False
+        last_ts_epoch = float(last.get("ts_epoch") or 0.0)
+        draft_ts_epoch = float(draft.get("ts_epoch") or 0.0)
+        if last_ts_epoch >= draft_ts_epoch and last_content.startswith(content):
+            return False
+        return True
 
     async def upsert_runtime_context(
         self,
@@ -591,6 +682,122 @@ class SessionBridgeService:
         if match_by_full_path:
             return match_by_full_path.group(0)
         return None
+
+    def lookup_claude_session_metadata(self, session_id: str) -> Optional[dict[str, Any]]:
+        """Look up a Claude session's metadata from disk by scanning ~/.claude/projects/**/{session_id}.jsonl.
+
+        Returns a dict compatible with the history format (session_id, cwd, display_name, etc.)
+        or None if no matching file is found.
+        """
+        if not self.claude_session_dir.exists():
+            return None
+        # Claude JSONL files are named {session_id}.jsonl — search by glob first (fast path).
+        try:
+            candidates = list(self.claude_session_dir.rglob(f"{session_id}.jsonl"))
+        except PermissionError:
+            return None
+        if not candidates:
+            return None
+
+        cwd = ""
+        cwd_candidates: list[str] = []
+        display_name = f"session-{session_id[:8]}"
+        last_ts = ""
+        last_epoch = 0.0
+        model = ""
+        has_real_user = False
+
+        for path in candidates:
+            try:
+                with path.open("r", encoding="utf-8", errors="ignore") as fh:
+                    for line in fh:
+                        text = line.strip()
+                        if not text:
+                            continue
+                        try:
+                            event = json.loads(text)
+                        except json.JSONDecodeError:
+                            continue
+                        if not isinstance(event, dict):
+                            continue
+                        ev_session = str(
+                            event.get("sessionId") or event.get("session_id") or ""
+                        ).strip()
+                        if ev_session and ev_session != session_id:
+                            continue
+                        line_cwd = str(event.get("cwd") or "").strip()
+                        if line_cwd:
+                            cwd_candidates.append(line_cwd)
+                        parsed_ts = _event_timestamp_or_none(event)
+                        if parsed_ts:
+                            ts, ts_epoch = parsed_ts
+                            if ts_epoch >= last_epoch:
+                                last_ts = ts
+                                last_epoch = ts_epoch
+                        event_type = str(event.get("type") or "").lower()
+                        if event_type == "user":
+                            message = event.get("message") if isinstance(event.get("message"), dict) else {}
+                            content = message.get("content", "")
+                            if isinstance(content, list):
+                                texts = [
+                                    c.get("text", "") for c in content
+                                    if isinstance(c, dict) and c.get("type") == "text"
+                                ]
+                                content = " ".join(t for t in texts if t)
+                            if isinstance(content, str) and content.strip():
+                                cleaned = _extract_visible_user_input(content)
+                                if not _is_auto_injected_message("user", cleaned):
+                                    has_real_user = True
+                                    cleaned = WHITESPACE_PATTERN.sub(" ", cleaned).strip()
+                                    if len(cleaned) > 42:
+                                        cleaned = cleaned[:39].rstrip() + "..."
+                                    display_name = cleaned
+                        elif event_type == "assistant":
+                            message = event.get("message") if isinstance(event.get("message"), dict) else {}
+                            m = str(message.get("model") or "").strip()
+                            if m:
+                                model = m
+            except OSError:
+                continue
+
+        if not last_ts:
+            return None
+        if cwd_candidates:
+            cwd = cwd_candidates[0]
+            try:
+                cwd = os.path.commonpath(cwd_candidates)
+            except ValueError:
+                cwd = cwd_candidates[0]
+
+        return {
+            "session_id": session_id,
+            "display_name": display_name,
+            "state": "IDLE",
+            "last_seen_at": last_ts,
+            "last_seen_epoch": last_epoch,
+            "originator": "Claude Code",
+            "cwd": cwd,
+            "cwd_basename": _basename_from_cwd(cwd),
+            "last_event_type": "",
+            "has_real_user_input": has_real_user,
+            "agent_brand": "claude",
+            "context": {
+                "model": model,
+                "effort": "",
+                "persona_id": "",
+                "persona_name": "",
+                "persona_content": "",
+                "permission_mode": PERMISSION_MODE_DEFAULT,
+                "approval_policy": "",
+                "sandbox_mode": "",
+                "plan_mode": None,
+                "plan_mode_fallback": False,
+                "total_tokens": 0,
+                "model_context_window": _claude_model_context_window(model) if model else 0,
+                "primary_rate_remaining_percent": None,
+                "secondary_rate_remaining_percent": None,
+            },
+        }
 
     def _collect_claude_conversation_from_files(self, session_id: str) -> list[dict[str, Any]]:
         """Collect conversation messages for a Claude session from ~/.claude/projects/**/*.jsonl."""
@@ -1054,6 +1261,7 @@ class SessionBridgeService:
         now_epoch = time.time()
         cwd = str(event.get("cwd") or "").strip()
         event_type = str(event.get("type") or "").lower()
+        emitted_event: Optional[dict[str, Any]] = None
 
         async with self._sessions_lock:
             session = self._sessions.get(session_id)
@@ -1101,6 +1309,7 @@ class SessionBridgeService:
                 session.last_event_type = "user_message"
                 # After user sends a message, the model is thinking.
                 session.state = "THINKING"
+                emitted_event = self._build_state_event(session)
 
             elif event_type == "assistant":
                 # Check for model info in message
@@ -1129,11 +1338,13 @@ class SessionBridgeService:
                 assistant_state, assistant_event_type = _classify_claude_assistant_message(message)
                 session.state = assistant_state
                 session.last_event_type = assistant_event_type
+                emitted_event = self._build_state_event(session)
 
             elif event_type == "tool_result":
                 session.last_event_type = "agent_tool_call_finish"
                 # After tool result, model is thinking again.
                 session.state = "THINKING"
+                emitted_event = self._build_state_event(session)
 
             elif event_type == "result":
                 session.last_event_type = "task_complete"
@@ -1165,6 +1376,7 @@ class SessionBridgeService:
                         if coerced is not None and coerced > 0:
                             session.model_context_window = coerced
                             break
+                emitted_event = self._build_state_event(session)
 
             elif event_type == "rate_limit_event":
                 rate_info = event.get("rate_limit_info") if isinstance(event.get("rate_limit_info"), dict) else {}
@@ -1176,6 +1388,7 @@ class SessionBridgeService:
                             session.primary_rate_remaining_percent = round(remaining, 2)
                         except (ValueError, TypeError):
                             pass
+                emitted_event = self._build_state_event(session)
 
             elif event_type == "summary":
                 # Claude sometimes writes a summary entry with the conversation title
@@ -1186,6 +1399,7 @@ class SessionBridgeService:
                         if len(summary_text) > 42:
                             summary_text = summary_text[:39].rstrip() + "..."
                         session.display_name = summary_text
+                emitted_event = self._build_state_event(session)
 
             elif event_type in {"last-prompt", "last_prompt"}:
                 # Claude persists a rolling lastPrompt near file tail; prefer it as latest user-facing title.
@@ -1202,6 +1416,7 @@ class SessionBridgeService:
                         if len(last_prompt) > 42:
                             last_prompt = last_prompt[:39].rstrip() + "..."
                         session.display_name = last_prompt
+                emitted_event = self._build_state_event(session)
 
             elif event_type == "queue-operation":
                 operation = str(event.get("operation") or "").strip().lower()
@@ -1219,6 +1434,10 @@ class SessionBridgeService:
                     session.display_name = queued_content
                     session.last_event_type = "user_message"
                     session.state = "THINKING"
+                    emitted_event = self._build_state_event(session)
+
+        if emitted_event:
+            await self._broadcast(emitted_event)
 
     async def _consume_file(self, path: Path) -> None:
         key = str(path)
@@ -1680,7 +1899,7 @@ class SessionBridgeService:
             "display_name": session.display_name,
             "state": session.state,
             "ts": session.last_seen_at,
-            "source": "codex_jsonl",
+            "source": "claude_jsonl" if getattr(session, "agent_brand", "codex") == "claude" else "codex_jsonl",
             "agent_brand": getattr(session, "agent_brand", "codex"),
             "has_real_user_input": bool(getattr(session, "has_real_user_input", False)),
             "meta": meta,

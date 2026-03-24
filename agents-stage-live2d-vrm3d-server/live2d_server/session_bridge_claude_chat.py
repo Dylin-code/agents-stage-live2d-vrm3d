@@ -665,6 +665,21 @@ class ClaudeSessionChatService:
 
                 # ---- result event → end of stream ----
                 if event_type == "result":
+                    # Check for error result from Claude CLI.
+                    if event.get("is_error"):
+                        errors = event.get("errors")
+                        if isinstance(errors, list) and errors:
+                            error_msg = "; ".join(str(e) for e in errors)
+                        elif isinstance(errors, str) and errors.strip():
+                            error_msg = errors.strip()
+                        else:
+                            error_msg = str(event.get("result") or "Claude session error")
+                        logger.warning(
+                            "Claude result is_error=True session=%s errors=%s",
+                            session_id_value, errors,
+                        )
+                        yield {"type": "error", "content": error_msg}
+                        return
                     # Only emit final text if nothing was already streamed via
                     # content_block_delta or assistant events.
                     if not text_emitted:
@@ -842,8 +857,14 @@ class ClaudeSessionChatService:
         total_tokens: Optional[int],
         model_context_window: Optional[int],
     ) -> None:
-        suspicious_usage = isinstance(usage, dict) and any(isinstance(item, dict) for item in usage.values())
-        suspicious_model_usage = isinstance(model_usage, dict) and any(isinstance(item, dict) for item in model_usage.values())
+        # Known nested dict fields in Claude API usage — not suspicious.
+        _KNOWN_NESTED_USAGE_KEYS = {"server_tool_use", "cache_creation", "cache_read"}
+        suspicious_usage = isinstance(usage, dict) and any(
+            isinstance(val, dict) for key, val in usage.items() if key not in _KNOWN_NESTED_USAGE_KEYS
+        )
+        suspicious_model_usage = isinstance(model_usage, dict) and any(
+            isinstance(val, dict) for key, val in model_usage.items() if key not in _KNOWN_NESTED_USAGE_KEYS
+        )
         suspicious_context = any(
             isinstance(event.get(key), dict)
             for key in ("model_context_window", "context_window", "max_tokens", "total_tokens")

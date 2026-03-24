@@ -157,9 +157,11 @@ import {
 import { DEFAULT_AGENT_BRANDS, getAgentBrandModels } from '../utils/agentBrands'
 import { submitAgentApproval } from '../utils/api/sessionBridge'
 import { resolveSelectedCharacterPersona, sanitizeCharacterPersonas } from '../utils/personas'
+import { markdownFileLinkPlugin, setupFilePathClickHandler } from '../utils/markdownFileLink'
 import ToolCall from './tool_call.vue'
 
 const md = markdownit({ html: true, breaks: true })
+md.use(markdownFileLinkPlugin)
 const isEditing = ref(false)
 const chatHeaderTitleInputRef = ref<HTMLInputElement>()
 const messagesRef = ref<HTMLDivElement>()
@@ -861,12 +863,18 @@ const handleSaveConversationLabel = () => {
   props.onNewMessage(localConversation.value)
 }
 
+let cleanupFilePathHandler: (() => void) | undefined
+
 onMounted(() => {
   document.addEventListener('paste', handlePaste)
+  if (messagesRef.value) {
+    cleanupFilePathHandler = setupFilePathClickHandler(messagesRef.value, props.systemSettings?.serverUrl)
+  }
 })
 
 onUnmounted(() => {
   document.removeEventListener('paste', handlePaste)
+  cleanupFilePathHandler?.()
 })
 </script>
 
@@ -1287,5 +1295,19 @@ onUnmounted(() => {
 
 .chat-container.transparent-mode :deep(.chat-sender textarea::placeholder) {
   color: rgba(220, 235, 255, 0.5) !important;
+}
+
+/* Local file path links */
+:deep(.local-file-link) {
+  color: #1677ff;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  cursor: pointer;
+  word-break: break-all;
+}
+
+:deep(.local-file-link:hover) {
+  color: #4096ff;
+  text-decoration-style: solid;
 }
 </style>

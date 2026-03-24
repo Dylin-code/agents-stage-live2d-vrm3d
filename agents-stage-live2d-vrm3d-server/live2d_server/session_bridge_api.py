@@ -1,11 +1,14 @@
 import json
 import logging
+import platform
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from .session_bridge_chat import CodexSessionChatError, CodexSessionChatService
 from .session_bridge_claude_chat import ClaudeSessionChatError
@@ -139,14 +142,23 @@ async def _ensure_session_record(session_id: str) -> Optional[_SessionRecord]:
     if not session_key:
         return None
     existing = await bridge_service.get_session_record(session_key)
-    if existing is not None:
-        return existing
 
     history = bridge_service._collect_history_from_files()
     item = history.get(session_key)
+    existing_brand = str(existing.agent_brand or "").strip().lower() if existing else ""
+    history_brand = str(item.get("agent_brand") or "").strip().lower() if isinstance(item, dict) else ""
+    should_refresh_from_claude_disk = existing_brand == AGENT_BRAND_CLAUDE or history_brand == AGENT_BRAND_CLAUDE
+    # Claude resume is cwd-sensitive. Refresh from Claude JSONL metadata even
+    # when a runtime record already exists so stale cwd values do not cause
+    # "No conversation found with session ID" resume failures.
+    if should_refresh_from_claude_disk or not item:
+        claude_item = bridge_service.lookup_claude_session_metadata(session_key)
+        if claude_item:
+            item = claude_item
     if not item:
-        return None
+        return existing
     context = item.get("context") if isinstance(item.get("context"), dict) else {}
+    agent_brand = str(item.get("agent_brand") or "").strip() or None
     await bridge_service.upsert_runtime_context(
         session_key,
         cwd=str(item.get("cwd") or ""),
@@ -173,6 +185,7 @@ async def _ensure_session_record(session_id: str) -> Optional[_SessionRecord]:
         secondary_rate_remaining_percent=context.get("secondary_rate_remaining_percent")
         if isinstance(context.get("secondary_rate_remaining_percent"), (int, float))
         else None,
+        agent_brand=agent_brand,
     )
     async with bridge_service._sessions_lock:
         session = bridge_service._sessions.get(session_key)
@@ -250,6 +263,7 @@ async def _bridge_chat_with_service(
     async def process():
         try:
             runtime_context: dict[str, Any] = {}
+            await bridge_service.reset_conversation_draft(request.session_id)
             async for event in chat_service.stream_prompt(
                 session_id=request.session_id,
                 prompt=request.message,
@@ -269,6 +283,18 @@ async def _bridge_chat_with_service(
                     # Merge (not overwrite) so earlier fields (model_context_window)
                     # survive when later events add total_tokens.
                     runtime_context.update(event.get("content") or {})
+                elif event.get("type") == "text":
+                    text_chunk = str(event.get("content") or "")
+                    if text_chunk:
+                        await bridge_service.append_conversation_draft(
+                            request.session_id,
+                            role="assistant",
+                            content=text_chunk,
+                        )
+                        await bridge_service.notify_conversation_updated(
+                            request.session_id,
+                            last_event_type="assistant_message",
+                        )
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
             branch = ""
@@ -633,6 +659,63 @@ async def bridge_agent_new_session(request: AgentNewSessionRequest) -> dict[str,
 async def bridge_agent_brands() -> dict[str, Any]:
     """Return supported agent brands and their default models."""
     return {"brands": AgentProviderRouter.brand_catalog()}
+
+
+# ---------------------------------------------------------------------------
+# Open local file in editor
+# ---------------------------------------------------------------------------
+
+class OpenFileRequest(BaseModel):
+    path: str
+    line: Optional[int] = None
+    editor: Optional[str] = None  # "vscode" | "cursor" | "system"
+
+
+_EDITOR_COMMANDS: list[tuple[str, str]] = [
+    ("cursor", "cursor"),
+    ("code", "code"),
+]
+
+
+def _find_editor(preferred: Optional[str] = None) -> tuple[Optional[str], str]:
+    """Return (executable_path, editor_name) for the first available editor."""
+    if preferred:
+        preferred = preferred.strip().lower()
+        for name, cmd in _EDITOR_COMMANDS:
+            if preferred == name:
+                exe = shutil.which(cmd)
+                if exe:
+                    return exe, name
+    for name, cmd in _EDITOR_COMMANDS:
+        exe = shutil.which(cmd)
+        if exe:
+            return exe, name
+    return None, "system"
+
+
+@router.post("/open-file")
+async def bridge_open_file(request: OpenFileRequest) -> dict[str, Any]:
+    """Open a local file in the user's editor (VS Code / Cursor / system default)."""
+    file_path = Path(request.path).resolve()
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
+
+    editor_exe, editor_name = _find_editor(request.editor)
+
+    if editor_exe and editor_name in ("cursor", "code"):
+        target = f"{file_path}:{request.line}" if request.line else str(file_path)
+        subprocess.Popen([editor_exe, "--goto", target])
+    elif platform.system() == "Darwin":
+        subprocess.Popen(["open", str(file_path)])
+    else:
+        subprocess.Popen(["xdg-open", str(file_path)])
+
+    return {
+        "ok": True,
+        "path": str(file_path),
+        "line": request.line,
+        "editor": editor_name,
+    }
 
 
 @router.get("/git/branches")
