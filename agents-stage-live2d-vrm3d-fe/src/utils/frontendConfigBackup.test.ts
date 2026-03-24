@@ -5,7 +5,6 @@ import {
   createDefaultFrontendConfigBackup,
   createFrontendConfigBackup,
   FRONTEND_CONFIG_CAMERA_STORAGE_KEY,
-  FRONTEND_CONFIG_CONVERSATIONS_STORAGE_KEY,
   FRONTEND_CONFIG_INTERACTION_POINTS_STORAGE_KEY_PREFIX,
   FRONTEND_CONFIG_SETTINGS_STORAGE_KEY,
   listManagedFrontendStorageKeys,
@@ -40,12 +39,10 @@ describe('frontendConfigBackup', () => {
   it('collects only managed frontend storage keys', () => {
     const storage = new MemoryStorage()
     storage.setItem(FRONTEND_CONFIG_SETTINGS_STORAGE_KEY, '{"systemSettings":{}}')
-    storage.setItem(FRONTEND_CONFIG_CONVERSATIONS_STORAGE_KEY, '{"conversationItems":[]}')
     storage.setItem(`${FRONTEND_CONFIG_INTERACTION_POINTS_STORAGE_KEY_PREFIX}scene.glb`, '{"points":[]}')
     storage.setItem('unrelated-key', 'ignore-me')
 
     expect(listManagedFrontendStorageKeys(storage)).toEqual([
-      FRONTEND_CONFIG_CONVERSATIONS_STORAGE_KEY,
       FRONTEND_CONFIG_SETTINGS_STORAGE_KEY,
       `${FRONTEND_CONFIG_INTERACTION_POINTS_STORAGE_KEY_PREFIX}scene.glb`,
     ])
@@ -55,7 +52,6 @@ describe('frontendConfigBackup', () => {
       source: 'agents-stage-live2d-vrm3d-fe',
       exportedAt: '2026-03-20T00:00:00.000Z',
       entries: {
-        [FRONTEND_CONFIG_CONVERSATIONS_STORAGE_KEY]: '{"conversationItems":[]}',
         [FRONTEND_CONFIG_SETTINGS_STORAGE_KEY]: '{"systemSettings":{}}',
         [`${FRONTEND_CONFIG_INTERACTION_POINTS_STORAGE_KEY_PREFIX}scene.glb`]: '{"points":[]}',
       },

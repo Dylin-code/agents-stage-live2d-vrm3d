@@ -171,10 +171,10 @@
         </div>
         <div class="role-setting-item">
           <div class="role-setting-header">
-            <label>前端設定備份</label>
+            <label>舞台設定備份</label>
           </div>
           <div class="role-setting-note">
-            匯出目前 localStorage 內的前端設定；匯入或套用範例後會自動重新整理頁面。
+            匯出目前舞台設定備份；匯入或套用範例後會自動重新整理頁面，並同步回後端。
           </div>
           <div class="config-backup-actions">
             <button
@@ -182,21 +182,21 @@
               class="role-setting-behavior-flow-btn"
               @click="exportFrontendConfig"
             >
-              匯出設定 JSON
+              匯出舞台設定 JSON
             </button>
             <button
               type="button"
               class="role-setting-behavior-flow-btn secondary"
               @click="triggerFrontendConfigImport"
             >
-              匯入設定 JSON
+              匯入舞台設定 JSON
             </button>
             <button
               type="button"
               class="role-setting-behavior-flow-btn secondary"
               @click="applyDefaultFrontendConfig"
             >
-              套用專案範例設定
+              套用專案範例舞台設定
             </button>
           </div>
           <input
@@ -207,7 +207,7 @@
             @change="handleFrontendConfigImport"
           >
           <a class="config-backup-link" href="/default-config.json" target="_blank" rel="noopener">
-            查看專案內建範例：`/default-config.json`
+            查看專案內建舞台設定範例：`/default-config.json`
           </a>
         </div>
       </div>
@@ -566,7 +566,7 @@ function buildBackupFilename(): string {
     String(now.getMinutes()).padStart(2, '0'),
     String(now.getSeconds()).padStart(2, '0'),
   ]
-  return `frontend-config-backup-${parts.join('')}.json`
+  return `stage-config-backup-${parts.join('')}.json`
 }
 
 function reloadPageForImportedConfig(successText: string): void {
@@ -580,10 +580,10 @@ function exportFrontendConfig(): void {
   try {
     const backup = createFrontendConfigBackup(window.localStorage)
     downloadJsonFile(buildBackupFilename(), JSON.stringify(backup, null, 2))
-    message.success(`已匯出 ${Object.keys(backup.entries).length} 個設定鍵`)
+    message.success(`已匯出 ${Object.keys(backup.entries).length} 個舞台設定鍵`)
   } catch (error) {
     console.error('Failed to export frontend config', error)
-    message.error('匯出設定失敗')
+    message.error('匯出舞台設定失敗')
   }
 }
 
@@ -598,14 +598,14 @@ async function handleFrontendConfigImport(event: Event): Promise<void> {
   try {
     const text = await file.text()
     const parsed = parseFrontendConfigBackup(text)
-    if (!window.confirm('匯入會覆蓋目前前端 localStorage 設定，是否繼續？')) {
+    if (!window.confirm('匯入會覆蓋目前舞台設定並同步到後端，是否繼續？')) {
       return
     }
     applyFrontendConfigBackup(window.localStorage, parsed)
-    reloadPageForImportedConfig('設定已匯入，頁面重新整理中')
+    reloadPageForImportedConfig('舞台設定已匯入，頁面重新整理中')
   } catch (error) {
     console.error('Failed to import frontend config', error)
-    message.error('匯入設定失敗，請確認 JSON 格式正確')
+    message.error('匯入舞台設定失敗，請確認 JSON 格式正確')
   } finally {
     if (target) target.value = ''
   }
@@ -613,11 +613,11 @@ async function handleFrontendConfigImport(event: Event): Promise<void> {
 
 async function applyDefaultFrontendConfig(): Promise<void> {
   try {
-    if (!window.confirm('這會用專案內建範例覆蓋目前前端設定，是否繼續？')) return
-    await applyDefaultFrontendConfigAndReload('已套用專案範例設定，頁面重新整理中')
+    if (!window.confirm('這會用專案內建範例覆蓋目前舞台設定並同步到後端，是否繼續？')) return
+    await applyDefaultFrontendConfigAndReload('已套用專案範例舞台設定，頁面重新整理中')
   } catch (error) {
     console.error('Failed to apply default frontend config', error)
-    message.error('套用專案範例設定失敗')
+    message.error('套用專案範例舞台設定失敗')
   }
 }
 
@@ -725,7 +725,7 @@ function onBrandChange(): void {
 onMounted(async () => {
   try {
     if (listManagedFrontendStorageKeys(window.localStorage).length === 0) {
-      await applyDefaultFrontendConfigAndReload('未偵測到前端設定，已自動載入專案範例設定')
+      await applyDefaultFrontendConfigAndReload('未偵測到舞台設定，已自動載入專案範例舞台設定')
       return
     }
   } catch (error) {

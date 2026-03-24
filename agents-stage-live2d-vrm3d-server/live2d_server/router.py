@@ -32,6 +32,10 @@ from live2d_server.live2d_motion_mapping import (
     get_cached_motion_semantic_map,
     start_live2d_motion_mapping_warmup,
 )
+from live2d_server.stage_config import (
+    FrontendConfigSnapshot,
+    StageConfigRepository,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -467,6 +471,7 @@ tts_server = None
 llm_adapter = None
 # 一个agent缓存，用于处理agent再入的问题
 agents = {}
+stage_config_repository = StageConfigRepository()
 
 def set_config(_config: Config):
     global config
@@ -483,6 +488,10 @@ def get_tts_server():
 
 def get_llm_adapter():
     return llm_adapter
+
+
+def get_stage_config_repository(request: Request) -> StageConfigRepository:
+    return getattr(request.app.state, "stage_config_repository", stage_config_repository)
 
 def init_tts_if_needed(config: Config, tts_server=None):
     """初始化TTS服务"""
@@ -698,6 +707,21 @@ async def set_settings(request: Request):
     await init_mcp_client(request_data)
     start_live2d_motion_mapping_warmup(get_config(), force=True)
     return {"status": "ok"}
+
+
+@router.get('/api/stage-config')
+async def get_stage_config(
+    repository: StageConfigRepository = Depends(get_stage_config_repository),
+):
+    return repository.load()
+
+
+@router.put('/api/stage-config')
+async def put_stage_config(
+    payload: FrontendConfigSnapshot,
+    repository: StageConfigRepository = Depends(get_stage_config_repository),
+):
+    return repository.save(payload)
 
 @router.get('/api/mcp_servers/{name}/status')
 async def get_mcp_servers(name: str, config: Config = Depends(get_config)):

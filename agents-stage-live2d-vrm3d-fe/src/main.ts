@@ -9,8 +9,21 @@ import App from './App.vue'
 import router from './router'
 import './style.css'  
 import ElementPlus from 'element-plus'
+import { bootstrapStageConfigSync, startStageConfigAutoSync } from './utils/stageConfigSync'
 
-const app = createApp(App)
-app.use(router)
-app.use(ElementPlus)
-app.mount('#app')
+async function bootstrap(): Promise<void> {
+  try {
+    await bootstrapStageConfigSync(window.localStorage)
+  } catch (error) {
+    console.error('Failed to bootstrap stage config sync', error)
+  }
+
+  startStageConfigAutoSync(window.localStorage, window)
+
+  const app = createApp(App)
+  app.use(router)
+  app.use(ElementPlus)
+  app.mount('#app')
+}
+
+void bootstrap()

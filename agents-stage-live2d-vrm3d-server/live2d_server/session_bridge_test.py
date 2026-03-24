@@ -439,6 +439,44 @@ class SessionBridgeServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(history["sessions"][0]["context"]["persona_id"], "persona-1")
         self.assertEqual(history["sessions"][0]["context"]["persona_name"], "冷靜 PM")
 
+    async def test_history_unwraps_persona_prompt_without_turn_context(self) -> None:
+        session_id = "00000000-0000-0000-0000-000000000018"
+        wrapped_prompt = json.dumps(
+            {
+                "schema": "session_bridge_user_input_v1",
+                "plan_mode": False,
+                "personality": {
+                    "id": "persona-1",
+                    "name": "冷靜 PM",
+                    "content": "請條理分明地回覆。",
+                },
+                "user_input": "幫我整理今天要改的檔案",
+                "instructions": [],
+            },
+            ensure_ascii=False,
+        )
+        with TemporaryDirectory() as codex_dir, TemporaryDirectory() as claude_dir:
+            self.service.session_dir = Path(codex_dir)
+            self.service.claude_session_dir = Path(claude_dir)
+            file_path = self.service.session_dir / "2026" / "03" / "08" / f"{session_id}.jsonl"
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(
+                json.dumps({
+                    "timestamp": "2026-03-08T10:40:00Z",
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "user_message",
+                        "message": wrapped_prompt,
+                    },
+                }, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            history = await self.service.get_history(limit=50)
+        self.assertEqual(history["sessions"][0]["display_name"], "幫我整理今天要改的檔案")
+        self.assertEqual(history["sessions"][0]["context"]["persona_id"], "persona-1")
+        self.assertEqual(history["sessions"][0]["context"]["persona_name"], "冷靜 PM")
+        self.assertEqual(history["sessions"][0]["context"]["persona_content"], "請條理分明地回覆。")
+
     async def test_history_title_ignores_auto_injected_bootstrap_prompt(self) -> None:
         session_id = "00000000-0000-0000-0000-000000000011"
         with TemporaryDirectory() as codex_dir, TemporaryDirectory() as claude_dir:

@@ -822,6 +822,7 @@ class SessionBridgeService:
         title = self._extract_title(top_type, payload)
         if title:
             record["display_name"] = title
+        context = record.get("context") if isinstance(record.get("context"), dict) else {}
         if top_type == "event_msg" and str(payload.get("type") or "") == "user_message":
             raw_user_message = str(payload.get("message") or "")
             user_message = _extract_visible_user_input(raw_user_message)
@@ -842,6 +843,7 @@ class SessionBridgeService:
                 context["persona_content"] = str(persona.get("content") or "")
             if user_content and not _is_auto_injected_message("user", user_content):
                 record["has_real_user_input"] = True
+        record["context"] = context
 
         state, is_task_complete, wait_for_user = self._map_to_state(top_type, payload)
         if wait_for_user:

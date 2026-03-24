@@ -8,7 +8,6 @@ import { buildDefaultSystemSettings } from '../pages/session-stage/sessionStageD
 
 export const FRONTEND_CONFIG_BACKUP_SCHEMA_VERSION = 1
 export const FRONTEND_CONFIG_SETTINGS_STORAGE_KEY = 'live2d-viewer-settings'
-export const FRONTEND_CONFIG_CONVERSATIONS_STORAGE_KEY = 'live2d-viewer-conversations'
 export const FRONTEND_CONFIG_BEHAVIOR_FLOW_STORAGE_KEYS = [
   'vrm-stage-behavior-flows-v3',
   'vrm-stage-behavior-flows-v2',
@@ -35,7 +34,6 @@ export interface StorageLike {
 
 const MANAGED_STORAGE_EXACT_KEYS = [
   FRONTEND_CONFIG_SETTINGS_STORAGE_KEY,
-  FRONTEND_CONFIG_CONVERSATIONS_STORAGE_KEY,
   VRM_ACTOR_SCALE_STORAGE_KEY,
   VRM_GLOBAL_GROUND_OFFSET_STORAGE_KEY,
   VRM_ACTOR_SLOT_CONFIG_STORAGE_KEY,
