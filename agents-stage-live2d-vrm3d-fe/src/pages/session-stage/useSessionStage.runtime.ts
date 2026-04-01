@@ -32,6 +32,7 @@ import { createSessionStageActorRuntime } from './sessionStageActorRuntime'
 import { createSessionStageChatAgentUtils, type SessionAgentUiOptions } from './sessionStageChatAgentUtils'
 import type { OpenSessionChatOptions } from './sessionStageChatAgentUtils'
 import { getDefaultBridgeWsUrl, getDefaultServerUrl } from '../../utils/serverUrl'
+import { fetchClaudeUsage, type ClaudeUsageSummary } from '../../utils/api/claudeUsage'
 import { buildDefaultSystemSettings } from './sessionStageDefaults'
 import { createSessionStageModelCatalogUtils } from './sessionStageModelCatalogUtils'
 import { resolveSelectedCharacterPersona } from '../../utils/personas'
@@ -80,6 +81,8 @@ const connectionStatus = ref<'connecting' | 'connected' | 'disconnected'>('conne
 const sessionStore = reactive<Record<string, SessionSnapshotItem>>({})
 const globalPrimaryRateRemaining = ref<number | null>(null)
 const globalSecondaryRateRemaining = ref<number | null>(null)
+const claudeUsageData = ref<ClaudeUsageSummary | null>(null)
+let claudeUsageTimer: ReturnType<typeof setInterval> | null = null
 
 const actors = new Map<string, AvatarActor>()
 const seatAssignments = new Map<string, number>()
@@ -276,8 +279,25 @@ const globalRateLimitText = computed(() => {
   const secondary = globalSecondaryRateRemaining.value
   const primaryText = primary === null ? '--%' : `${Math.round(primary)}%`
   const secondaryText = secondary === null ? '--%' : `${Math.round(secondary)}%`
-  return `Agent剩餘狀態: ${primaryText} / ${secondaryText}`
+  return `Codex剩餘: ${primaryText} / ${secondaryText}`
 })
+
+const claudeUsageText = computed(() => {
+  const data = claudeUsageData.value
+  if (!data) return 'Claude剩餘: --% / --%'
+  const fiveH = data.five_hour ? `${Math.round(100 - data.five_hour.utilization)}%` : '--%'
+  const sevenD = data.seven_day ? `${Math.round(100 - data.seven_day.utilization)}%` : '--%'
+  return `Claude剩餘: ${fiveH} / ${sevenD}`
+})
+
+async function refreshClaudeUsage(): Promise<void> {
+  try {
+    const data = await fetchClaudeUsage()
+    if (data) claudeUsageData.value = data
+  } catch {
+    // silently ignore — stale data is acceptable
+  }
+}
 
 function stateText(state: SessionState): string {
   return getSessionStateText(state)
@@ -1020,6 +1040,10 @@ onMounted(async () => {
   window.addEventListener('resize', onWindowResize)
   setupLayoutObserver()
   measureLayoutBounds()
+
+  // Fetch Claude usage on mount and every 600s
+  refreshClaudeUsage()
+  claudeUsageTimer = setInterval(refreshClaudeUsage, 600_000)
 })
 
 onUnmounted(() => {
@@ -1055,6 +1079,10 @@ onUnmounted(() => {
   conversationSyncTimers.clear()
   conversationSyncRunning.clear()
   conversationSyncQueued.clear()
+  if (claudeUsageTimer) {
+    clearInterval(claudeUsageTimer)
+    claudeUsageTimer = null
+  }
 })
 
   return {
@@ -1065,6 +1093,7 @@ onUnmounted(() => {
     connectionStatusClass,
     connectionStatusText,
     globalRateLimitText,
+    claudeUsageText,
     activeCount,
     roleSettingsCollapsed,
     toggleRoleSettingsPanel,

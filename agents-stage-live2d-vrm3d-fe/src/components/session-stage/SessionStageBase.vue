@@ -18,6 +18,7 @@
       </div>
       <div class="status-chip neutral">Active: {{ activeCount }}/{{ MAX_SESSIONS }}</div>
       <div class="status-chip neutral">{{ globalRateLimitText }}</div>
+      <div class="status-chip neutral">{{ claudeUsageText }}</div>
       <button class="stage-view-switch" type="button" @click="switchView">
         {{ switchButtonText }}
       </button>
@@ -662,6 +663,7 @@ const {
   connectionStatusClass,
   connectionStatusText,
   globalRateLimitText,
+  claudeUsageText,
   activeCount,
   roleSettingsCollapsed,
   toggleRoleSettingsPanel,

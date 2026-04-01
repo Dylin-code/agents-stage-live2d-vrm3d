@@ -693,6 +693,17 @@ def _find_editor(preferred: Optional[str] = None) -> tuple[Optional[str], str]:
     return None, "system"
 
 
+@router.get("/claude-usage")
+async def bridge_claude_usage() -> dict[str, Any]:
+    """Return Claude Code usage / rate-limit data from Anthropic API."""
+    from .claude_usage import fetch_claude_usage, format_usage_summary
+
+    raw = await fetch_claude_usage()
+    if raw is None:
+        raise HTTPException(status_code=502, detail="Unable to fetch Claude usage (no token or API error)")
+    return format_usage_summary(raw)
+
+
 @router.post("/open-file")
 async def bridge_open_file(request: OpenFileRequest) -> dict[str, Any]:
     """Open a local file in the user's editor (VS Code / Cursor / system default)."""
