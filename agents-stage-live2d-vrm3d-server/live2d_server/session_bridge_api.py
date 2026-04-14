@@ -741,7 +741,12 @@ async def bridge_git_branches(session_id: Optional[str] = None, cwd: Optional[st
         }
     listing = _run_git_command(effective_cwd, ["branch", "--format", "%(refname:short)"], timeout=10)
     if listing.returncode != 0:
-        raise CodexSessionChatError(f"failed to list branches: {(listing.stderr or '').strip()}")
+        return {
+            "cwd": effective_cwd,
+            "current": "",
+            "branches": [],
+            "error": (listing.stderr or "").strip(),
+        }
     current = _run_git_command(effective_cwd, ["branch", "--show-current"], timeout=10)
     current_branch = (current.stdout or "").strip() if current.returncode == 0 else ""
     branches = [

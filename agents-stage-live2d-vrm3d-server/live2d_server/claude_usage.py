@@ -19,17 +19,34 @@ USAGE_API_URL = "https://api.anthropic.com/api/oauth/usage"
 TOKEN_EXCHANGE_URL = "https://platform.claude.com/v1/oauth/token"
 OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 KEYCHAIN_SERVICE = "Claude Code-credentials"
-REQUEST_TIMEOUT = 8.0
+REQUEST_TIMEOUT = 4.0
 
 # In-memory cache to avoid hitting the API too frequently
 _cache: dict[str, Any] = {"data": None, "fetched_at": 0.0}
 CACHE_TTL_SECONDS = 30.0
 
 
+def _read_credentials_file() -> Optional[dict[str, Any]]:
+    """Read Claude Code OAuth credentials from ~/.claude/.credentials.json (cross-platform)."""
+    from pathlib import Path
+    cred_path = Path.home() / ".claude" / ".credentials.json"
+    if not cred_path.exists():
+        return None
+    try:
+        data = json.loads(cred_path.read_text(encoding="utf-8"))
+        oauth = data.get("claudeAiOauth")
+        if not isinstance(oauth, dict):
+            logger.warning("Credentials file missing claudeAiOauth key")
+            return None
+        return oauth
+    except Exception:
+        logger.exception("Failed to read credentials file: %s", cred_path)
+        return None
+
+
 def _read_keychain_credentials() -> Optional[dict[str, Any]]:
     """Read Claude Code OAuth credentials from macOS Keychain."""
     if platform.system() != "Darwin":
-        logger.debug("Keychain read skipped: not macOS")
         return None
     try:
         import getpass
@@ -64,7 +81,8 @@ def _get_access_token() -> Optional[str]:
     if env_token:
         return env_token
 
-    oauth = _read_keychain_credentials()
+    # Try credentials file first (works on all platforms), then macOS Keychain
+    oauth = _read_credentials_file() or _read_keychain_credentials()
     if not oauth:
         return None
 
