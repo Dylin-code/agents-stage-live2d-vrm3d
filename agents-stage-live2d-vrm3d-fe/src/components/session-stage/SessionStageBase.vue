@@ -366,6 +366,7 @@
           :agentSessionOptions="activeChatAgentOptions"
           :onAgentSessionOptionsChange="handleActiveSessionAgentOptionsChange"
           :onRequestRefreshBranches="refreshActiveSessionBranches"
+          :onUserMessageSent="notifyUserMessageSent"
           :transparentMode="isPortraitMode"
           :defaultAgentSettingsExpanded="!isPortraitMode"
         />
@@ -706,6 +707,7 @@ const {
   activeChatAgentOptions,
   handleActiveSessionAgentOptionsChange,
   refreshActiveSessionBranches,
+  notifyUserMessageSent,
   isPortraitMode,
   portraitSessionIndex,
   totalPortraitSessions,

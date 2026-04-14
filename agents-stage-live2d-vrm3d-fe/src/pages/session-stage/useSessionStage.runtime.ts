@@ -82,7 +82,7 @@ const sessionStore = reactive<Record<string, SessionSnapshotItem>>({})
 const globalPrimaryRateRemaining = ref<number | null>(null)
 const globalSecondaryRateRemaining = ref<number | null>(null)
 const claudeUsageData = ref<ClaudeUsageSummary | null>(null)
-let claudeUsageTimer: ReturnType<typeof setInterval> | null = null
+let claudeUsageTimer: ReturnType<typeof setTimeout> | null = null
 
 const actors = new Map<string, AvatarActor>()
 const seatAssignments = new Map<string, number>()
@@ -297,6 +297,19 @@ async function refreshClaudeUsage(): Promise<void> {
   } catch {
     // silently ignore — stale data is acceptable
   }
+}
+
+function scheduleClaudeUsageDelayed(): void {
+  if (claudeUsageTimer) clearTimeout(claudeUsageTimer)
+  claudeUsageTimer = setTimeout(() => {
+    claudeUsageTimer = null
+    refreshClaudeUsage()
+  }, 600_000)
+}
+
+function notifyUserMessageSent(): void {
+  refreshClaudeUsage()
+  scheduleClaudeUsageDelayed()
 }
 
 function stateText(state: SessionState): string {
@@ -1041,9 +1054,8 @@ onMounted(async () => {
   setupLayoutObserver()
   measureLayoutBounds()
 
-  // Fetch Claude usage on mount and every 600s
+  // Fetch Claude usage on mount
   refreshClaudeUsage()
-  claudeUsageTimer = setInterval(refreshClaudeUsage, 600_000)
 })
 
 onUnmounted(() => {
@@ -1080,7 +1092,7 @@ onUnmounted(() => {
   conversationSyncRunning.clear()
   conversationSyncQueued.clear()
   if (claudeUsageTimer) {
-    clearInterval(claudeUsageTimer)
+    clearTimeout(claudeUsageTimer)
     claudeUsageTimer = null
   }
 })
@@ -1136,6 +1148,7 @@ onUnmounted(() => {
     activeChatAgentOptions,
     handleActiveSessionAgentOptionsChange,
     refreshActiveSessionBranches,
+    notifyUserMessageSent,
     isPortraitMode: portrait.isPortraitMode,
     portraitSessionIndex: portrait.portraitSessionIndex,
     totalPortraitSessions,

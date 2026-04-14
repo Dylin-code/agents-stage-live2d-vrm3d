@@ -268,6 +268,10 @@ const props = defineProps({
     type: Function as PropType<() => void>,
     required: false,
   },
+  onUserMessageSent: {
+    type: Function as PropType<() => void>,
+    required: false,
+  },
   transparentMode: {
     type: Boolean,
     default: false,
@@ -545,6 +549,7 @@ const sendMessage = async () => {
     loading: false,
   })
   handleMessageChange(localConversation.value.messages)
+  props.onUserMessageSent?.()
   const chatHistory = localConversation.value.messages.map((msg) => ({
     role: msg.role === 'user' ? 'user' : 'assistant',
     content: msg.content,
