@@ -5,6 +5,7 @@ import logging
 import mimetypes
 import os
 import shlex
+import shutil
 import subprocess
 import time
 import uuid
@@ -63,7 +64,8 @@ class CodexSessionChatService:
         approval_timeout_sec: Optional[float] = None,
         default_cwd: Optional[str] = None,
     ) -> None:
-        self.codex_bin = codex_bin
+        # Resolve the full path of the CLI binary (handles .cmd/.bat on Windows)
+        self.codex_bin = shutil.which(codex_bin) or codex_bin
         self.idle_timeout_sec = (
             float(idle_timeout_sec)
             if idle_timeout_sec is not None
