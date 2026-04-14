@@ -1,6 +1,18 @@
-import { defineConfig, loadEnv } from 'vite'
+import { defineConfig, loadEnv, type Plugin } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import path from 'path'
+
+/** Attach error handlers to every incoming socket so ECONNRESET won't crash the dev server. */
+function socketErrorGuard(): Plugin {
+  return {
+    name: 'socket-error-guard',
+    configureServer(server) {
+      server.httpServer?.on('connection', (socket) => {
+        socket.on('error', () => {})
+      })
+    },
+  }
+}
 
 function parsePort(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value || '', 10)
@@ -18,7 +30,7 @@ export default defineConfig(({ mode }) => {
   return {
     envDir: repoRoot,
     base: './',
-    plugins: [vue()],
+    plugins: [vue(), socketErrorGuard()],
     resolve: {
       alias: {
         '@': path.resolve(__dirname, 'src'),
@@ -36,6 +48,13 @@ export default defineConfig(({ mode }) => {
       port: frontendPort,
       fs: {
         allow: ['..'],
+      },
+      proxy: {
+        '/api': {
+          target: `http://${backendHost}:${backendPort}`,
+          changeOrigin: true,
+          ws: true,
+        },
       },
     },
   }
