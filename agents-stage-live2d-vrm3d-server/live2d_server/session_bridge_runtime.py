@@ -1668,7 +1668,7 @@ class SessionBridgeService:
         if emitted_event:
             await self._broadcast(emitted_event)
         elif state is None and not is_task_complete:
-            logger.warning(
+            logger.debug(
                 "Session bridge ignored unknown event: top_type=%s payload_type=%s",
                 top_type,
                 payload.get("type"),
