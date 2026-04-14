@@ -13,7 +13,6 @@ devin.cursorrules/
 tests/
 tools/
 .cursorrules
-.env.example
 __pycache__/
 
 .venv/

@@ -1065,6 +1065,7 @@ onUnmounted(() => {
   padding: 16px;
   flex-shrink: 0;
   background: linear-gradient(to top, rgba(255, 255, 255, 0.9), transparent);
+  padding-bottom: calc(16px + var(--app-safe-area-bottom, 0px));
 }
 
 .chat-sender {
@@ -1287,6 +1288,7 @@ onUnmounted(() => {
   backdrop-filter: blur(8px);
   border-radius: 12px;
   margin: 0 4px 4px;
+  padding-bottom: calc(16px + var(--app-safe-area-bottom, 0px));
 }
 
 .chat-container.transparent-mode :deep(.chat-sender) {

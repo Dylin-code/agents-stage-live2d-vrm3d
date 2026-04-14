@@ -754,7 +754,7 @@ onUnmounted(() => {
 <style scoped>
 .session-stage {
   width: 100vw;
-  height: 100vh;
+  height: var(--app-viewport-height, 100vh);
   position: fixed;
   top: 0;
   left: 0;
@@ -832,7 +832,7 @@ canvas {
   top: 16px;
   right: 16px;
   width: min(360px, calc(100vw - 24px));
-  max-height: calc(100vh - 32px);
+  max-height: calc(var(--app-viewport-height, 100vh) - 32px - var(--app-safe-area-bottom, 0px));
   padding: 12px;
   border-radius: 14px;
   background: rgba(7, 19, 34, 0.68);
@@ -1069,7 +1069,7 @@ canvas {
   top: 60px;
   left: 16px;
   width: min(560px, calc(100vw - 32px));
-  max-height: calc(100vh - 140px);
+  max-height: calc(var(--app-viewport-height, 100vh) - 140px - var(--app-safe-area-bottom, 0px));
   overflow: auto;
   border-radius: 14px;
   padding: 12px;
@@ -1423,16 +1423,16 @@ canvas {
     left: 12px;
     right: 12px;
     width: auto;
-    max-height: 38vh;
+    max-height: min(38vh, calc(var(--app-viewport-height, 100vh) - 180px - var(--app-safe-area-bottom, 0px)));
   }
 
   .session-sidebar {
     top: auto;
-    bottom: 12px;
+    bottom: calc(12px + var(--app-safe-area-bottom, 0px));
     right: 12px;
     left: 12px;
     width: auto;
-    max-height: 30vh;
+    max-height: min(30vh, calc(var(--app-viewport-height, 100vh) - 140px - var(--app-safe-area-bottom, 0px)));
     display: flex;
   }
 
@@ -1441,8 +1441,8 @@ canvas {
   }
 
   .session-sidebar.with-chat {
-    bottom: calc(52vh + 20px);
-    max-height: 22vh;
+    bottom: calc(52vh + 20px + var(--app-safe-area-bottom, 0px));
+    max-height: min(22vh, calc(var(--app-viewport-height, 100vh) - 160px - var(--app-safe-area-bottom, 0px)));
   }
 
   .chat-dock {
@@ -1452,18 +1452,18 @@ canvas {
     min-height: 320px;
     left: 12px;
     right: 12px;
-    bottom: 12px;
-    max-height: 52vh;
+    bottom: calc(12px + var(--app-safe-area-bottom, 0px));
+    max-height: min(52vh, calc(var(--app-viewport-height, 100vh) - 96px - var(--app-safe-area-bottom, 0px)));
   }
 }
 
 /* ===== Portrait mode (direct-orientation mobile) ===== */
 @media (orientation: portrait) and (max-width: 920px) {
   .stage-header {
-    top: 8px;
-    left: 8px;
+    top: calc(8px + var(--app-safe-area-top, 0px));
+    left: calc(8px + var(--app-safe-area-left, 0px));
     gap: 5px;
-    max-width: calc(100vw - 60px);
+    max-width: calc(100vw - 60px - var(--app-safe-area-left, 0px) - var(--app-safe-area-right, 0px));
     overflow-x: auto;
     flex-wrap: nowrap;
     -webkit-overflow-scrolling: touch;
@@ -1496,16 +1496,16 @@ canvas {
   }
 
   .role-settings-panel {
-    top: 42px;
-    left: 8px;
-    right: 8px;
+    top: calc(42px + var(--app-safe-area-top, 0px));
+    left: calc(8px + var(--app-safe-area-left, 0px));
+    right: calc(8px + var(--app-safe-area-right, 0px));
     width: auto;
   }
 
   .portrait-sidebar-toggle {
     position: absolute;
-    top: 16px;
-    right: 16px;
+    top: calc(16px + var(--app-safe-area-top, 0px));
+    right: calc(16px + var(--app-safe-area-right, 0px));
     z-index: 15;
     width: 40px;
     height: 40px;
@@ -1539,11 +1539,13 @@ canvas {
     bottom: 0;
     left: auto;
     width: min(320px, 80vw);
-    max-height: 100vh;
+    max-height: var(--app-viewport-height, 100vh);
     border-radius: 14px 0 0 14px;
     transform: translateX(100%);
     transition: transform 0.3s ease;
     z-index: 20;
+    padding-top: calc(12px + var(--app-safe-area-top, 0px));
+    padding-bottom: calc(12px + var(--app-safe-area-bottom, 0px));
   }
 
   .session-sidebar.portrait-visible {
@@ -1556,7 +1558,7 @@ canvas {
 
   .session-sidebar.with-chat {
     bottom: 0;
-    max-height: 100vh;
+    max-height: var(--app-viewport-height, 100vh);
   }
 
   .chat-dock.portrait-transparent {
@@ -1564,13 +1566,14 @@ canvas {
     backdrop-filter: none;
     border: none;
     box-shadow: none;
-    top: 56px;
+    top: calc(56px + var(--app-safe-area-top, 0px));
     bottom: 0;
     left: 0;
     right: 0;
     max-height: none;
     min-height: 0;
     border-radius: 0;
+    padding: 0 0 calc(10px + var(--app-safe-area-bottom, 0px));
   }
 
   .chat-dock.portrait-transparent .chat-dock-header {
@@ -1583,6 +1586,7 @@ canvas {
 
   .chat-dock.portrait-transparent .chat-dock-body {
     flex: 1;
+    min-height: 0;
   }
 }
 </style>

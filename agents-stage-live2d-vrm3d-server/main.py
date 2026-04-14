@@ -1,6 +1,7 @@
 import argparse
 import json
 import logging
+import os
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -41,6 +42,7 @@ logger = logging.getLogger(__name__)
 static_path = None
 run_mode = "local"
 app_config = Config()
+_REPO_ENV_CACHE: dict[str, str] | None = None
 
 
 @asynccontextmanager
@@ -74,6 +76,48 @@ def _load_config(config_path: str | None) -> Config:
         return Config()
     with open(p, encoding="utf-8") as f:
         return Config(**json.load(f))
+
+
+def _load_repo_env() -> dict[str, str]:
+    global _REPO_ENV_CACHE
+    if _REPO_ENV_CACHE is not None:
+        return _REPO_ENV_CACHE
+
+    env_path = Path(__file__).resolve().parent.parent / ".env"
+    values: dict[str, str] = {}
+    if env_path.exists():
+        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if not key:
+                continue
+            values[key] = value
+    _REPO_ENV_CACHE = values
+    return values
+
+
+def _get_env_or_default(key: str, default: str) -> str:
+    value = os.getenv(key)
+    if value is not None and value.strip():
+        return value.strip()
+    return _load_repo_env().get(key, default)
+
+
+def _get_default_host() -> str:
+    return _get_env_or_default("VITE_BACKEND_HOST", "0.0.0.0")
+
+
+def _get_default_port() -> int:
+    raw_value = _get_env_or_default("VITE_BACKEND_PORT", "8000")
+    try:
+        return int(raw_value)
+    except ValueError:
+        logger.warning("Invalid VITE_BACKEND_PORT=%s, fallback to 8000", raw_value)
+        return 8000
 
 
 def _ensure_jwt_secret(config: Config, config_path: str | None) -> Config:
@@ -127,8 +171,8 @@ def create_app(mode: str = "local", config: Config | None = None) -> FastAPI:
 
 def main():
     parser = argparse.ArgumentParser(description="啟動 Web 服務器")
-    parser.add_argument('--host', type=str, default='0.0.0.0', help='服務器主機')
-    parser.add_argument('--port', type=int, default=3000, help='服務器端口')
+    parser.add_argument('--host', type=str, default=_get_default_host(), help='服務器主機')
+    parser.add_argument('--port', type=int, default=_get_default_port(), help='服務器端口')
     parser.add_argument('--static-path', type=str, default=None, help='靜態文件路徑')
     parser.add_argument('--mode', choices=['local', 'remote'], default='local',
                         help='local: 無驗證 (預設), remote: Google OAuth2 驗證')

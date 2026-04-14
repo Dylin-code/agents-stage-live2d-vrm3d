@@ -13,7 +13,7 @@ class TTSConfig(BaseModel):
 class ServerConfig(BaseModel):
     pythonExec: str = ""
     serverPath: str = ""
-    port: int = 5000
+    port: int = 8000
     host: str = '0.0.0.0'
     staticPath: str = ''
     tts: TTSConfig = TTSConfig()

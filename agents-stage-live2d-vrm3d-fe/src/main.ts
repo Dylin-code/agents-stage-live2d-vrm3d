@@ -10,6 +10,7 @@ import router from './router'
 import './style.css'  
 import ElementPlus from 'element-plus'
 import { bootstrapStageConfigSync, startStageConfigAutoSync } from './utils/stageConfigSync'
+import { setupMobileViewportVars } from './utils/mobileViewport'
 
 async function bootstrap(): Promise<void> {
   try {
@@ -19,6 +20,7 @@ async function bootstrap(): Promise<void> {
   }
 
   startStageConfigAutoSync(window.localStorage, window)
+  setupMobileViewportVars(window, document.documentElement)
 
   const app = createApp(App)
   app.use(router)

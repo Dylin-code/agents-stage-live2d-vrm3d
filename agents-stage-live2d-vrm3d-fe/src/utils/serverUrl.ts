@@ -1,27 +1,32 @@
+const DEFAULT_LOCAL_BACKEND_HOST = import.meta.env.VITE_BACKEND_HOST || '127.0.0.1'
+const DEFAULT_LOCAL_BACKEND_PORT = import.meta.env.VITE_BACKEND_PORT || '8000'
+const DEFAULT_LOCAL_SERVER_URL = `http://${DEFAULT_LOCAL_BACKEND_HOST}:${DEFAULT_LOCAL_BACKEND_PORT}`
+const DEFAULT_LOCAL_BRIDGE_WS_URL = `ws://${DEFAULT_LOCAL_BACKEND_HOST}:${DEFAULT_LOCAL_BACKEND_PORT}/api/session-bridge/ws`
+
 /**
  * Auto-detect the default server URL.
- * - Local dev (localhost/127.0.0.1): explicit http://127.0.0.1:8000
+ * - Local dev (localhost/127.0.0.1): explicit backend origin from root .env
  * - Remote mode (Cloudflare Tunnel etc.): empty string = relative paths (same origin)
  */
 export function getDefaultServerUrl(): string {
-  if (typeof window === 'undefined') return 'http://127.0.0.1:8000'
+  if (typeof window === 'undefined') return DEFAULT_LOCAL_SERVER_URL
   const { hostname } = window.location
   if (hostname === '127.0.0.1' || hostname === 'localhost') {
-    return 'http://127.0.0.1:8000'
+    return DEFAULT_LOCAL_SERVER_URL
   }
   return ''
 }
 
 /**
  * Auto-detect the default WebSocket URL for session bridge.
- * - Local dev: ws://127.0.0.1:8000/api/session-bridge/ws
+ * - Local dev: backend websocket URL from root .env
  * - Remote mode: derive from current page origin (wss://...)
  */
 export function getDefaultBridgeWsUrl(): string {
-  if (typeof window === 'undefined') return 'ws://127.0.0.1:8000/api/session-bridge/ws'
+  if (typeof window === 'undefined') return DEFAULT_LOCAL_BRIDGE_WS_URL
   const { hostname, protocol, host } = window.location
   if (hostname === '127.0.0.1' || hostname === 'localhost') {
-    return 'ws://127.0.0.1:8000/api/session-bridge/ws'
+    return DEFAULT_LOCAL_BRIDGE_WS_URL
   }
   const wsProtocol = protocol === 'https:' ? 'wss:' : 'ws:'
   return `${wsProtocol}//${host}/api/session-bridge/ws`

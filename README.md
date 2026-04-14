@@ -130,6 +130,19 @@ uv venv
 uv sync
 ```
 
+### 3. 確認統一開發設定
+
+專案根目錄的 [`.env`](/Users/dannylin/Desktop/agents-stage-live2d-vrm3d/.env:1) 是前後端共用的單一來源，預設如下：
+
+```bash
+VITE_BACKEND_HOST=127.0.0.1
+VITE_BACKEND_PORT=8000
+VITE_FRONTEND_HOST=0.0.0.0
+VITE_FRONTEND_PORT=5173
+```
+
+之後若要調整前端或後端 port，優先修改這份檔案，不要分別去改 `Makefile`、Vite 或前端 API fallback。
+
 ## 啟動方式
 
 ### 一鍵啟動
@@ -142,20 +155,22 @@ make dev
 
 預設服務位址：
 
-- Frontend: `http://127.0.0.1:5173`
-- Backend: `http://127.0.0.1:8000`
+- Frontend: 依 `.env` 的 `VITE_FRONTEND_PORT`，預設為 `http://127.0.0.1:5173`
+- Backend: 依 `.env` 的 `VITE_BACKEND_PORT`，預設為 `http://127.0.0.1:8000`
 
 ### 手動啟動
 
 ```bash
 # terminal 1
 cd agents-stage-live2d-vrm3d-server
-.venv/bin/python main.py --host 127.0.0.1 --port 8000
+.venv/bin/python main.py
 
 # terminal 2
 cd agents-stage-live2d-vrm3d-fe
 npm run dev
 ```
+
+`main.py`、Vite dev server、前端預設 API / WebSocket URL 都會從根目錄 `.env` 自動讀取設定。
 
 ## 使用方式
 
@@ -163,7 +178,7 @@ npm run dev
 
 進入：
 
-- `http://127.0.0.1:5173/`
+- 以 `.env` 預設值為例：`http://127.0.0.1:5173/`
 - 或 `http://127.0.0.1:5173/session-stage`
 
 這裡是預設的 2D 控制台，適合進行日常 session 管理與對話操作。
@@ -185,7 +200,7 @@ npm run dev
 
 進入：
 
-`http://127.0.0.1:5173/session-stage-3d`
+以 `.env` 預設值為例：`http://127.0.0.1:5173/session-stage-3d`
 
 3D 舞台會將目前可見 session 映射為 VRM actor，並依狀態、互動與行為流驅動舞台中的角色表現。
 
@@ -325,7 +340,7 @@ npm run dev
 
    ```bash
    cd agents-stage-live2d-vrm3d-server
-   .venv/bin/python main.py --mode remote --host 0.0.0.0 --port 8000 --static-path ../agents-stage-live2d-vrm3d-fe/dist
+   .venv/bin/python main.py --mode remote --host 127.0.0.1 --port 8000 --static-path ../agents-stage-live2d-vrm3d-fe/dist
    ```
 
 #### 注意事項
