@@ -139,9 +139,13 @@ VITE_BACKEND_HOST=127.0.0.1
 VITE_BACKEND_PORT=8000
 VITE_FRONTEND_HOST=0.0.0.0
 VITE_FRONTEND_PORT=5173
+# 反向代理 / 內網 DNS 使用：逗號分隔的 host 白名單，或填 "all" 關閉檢查
+# VITE_ALLOWED_HOSTS=dev.example.com,stage.example.com
 ```
 
 之後若要調整前端或後端 port，優先修改這份檔案，不要分別去改 `Makefile`、Vite 或前端 API fallback。
+
+若透過 Caddy / Nginx 等反向代理搭配內網 DNS 存取 dev server，Vite 會因為 host 檢查（DNS rebinding 防護）回應 `Blocked request`，請在 `.env` 設定 `VITE_ALLOWED_HOSTS` 把網域加進白名單。
 
 ## 啟動方式
 

@@ -19,6 +19,18 @@ function parsePort(value: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback
 }
 
+/** Parse comma-separated host list. Supports the special value "all" to disable host check. */
+function parseAllowedHosts(value: string | undefined): true | string[] | undefined {
+  if (!value) return undefined
+  const trimmed = value.trim()
+  if (!trimmed) return undefined
+  if (trimmed === 'all' || trimmed === '*') return true
+  return trimmed
+    .split(',')
+    .map((h) => h.trim())
+    .filter(Boolean)
+}
+
 export default defineConfig(({ mode }) => {
   const repoRoot = path.resolve(__dirname, '..')
   const env = loadEnv(mode, repoRoot, '')
@@ -26,6 +38,7 @@ export default defineConfig(({ mode }) => {
   const backendPort = parsePort(env.VITE_BACKEND_PORT, 8000)
   const frontendHost = env.VITE_FRONTEND_HOST || '0.0.0.0'
   const frontendPort = parsePort(env.VITE_FRONTEND_PORT, 5173)
+  const allowedHosts = parseAllowedHosts(env.VITE_ALLOWED_HOSTS)
 
   return {
     envDir: repoRoot,
@@ -46,6 +59,7 @@ export default defineConfig(({ mode }) => {
     server: {
       host: frontendHost,
       port: frontendPort,
+      ...(allowedHosts !== undefined ? { allowedHosts } : {}),
       fs: {
         allow: ['..'],
       },
