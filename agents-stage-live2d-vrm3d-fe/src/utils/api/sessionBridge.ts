@@ -8,6 +8,7 @@ const HISTORY_PATH = '/api/session-bridge/history'
 const CONVERSATION_PATH = '/api/session-bridge/conversation'
 const GIT_BRANCHES_PATH = '/api/session-bridge/git/branches'
 const GIT_SWITCH_PATH = '/api/session-bridge/git/switch'
+const DIRECTORY_BROWSER_PATH = '/api/session-bridge/fs/directories'
 const WS_PATH = '/api/session-bridge/ws'
 // Unified multi-brand endpoints
 const AGENT_CHAT_PATH = '/api/session-bridge/agent/chat'
@@ -116,6 +117,18 @@ export interface SessionBridgeNewSessionRequest {
   persona_content?: string
 }
 
+export interface SessionBridgeDirectoryEntry {
+  name: string
+  path: string
+}
+
+export interface SessionBridgeDirectoryBrowseResponse {
+  current_path: string
+  parent_path: string | null
+  directories: SessionBridgeDirectoryEntry[]
+  ancestors: SessionBridgeDirectoryEntry[]
+}
+
 // Legacy compatibility adapter for old callers.
 export async function createSessionBridgeSession(
   serverUrl: string | undefined,
@@ -163,6 +176,26 @@ export async function switchSessionBridgeBranch(
     throw new Error(`failed to switch branch: ${response.status}`)
   }
   return (await response.json()) as Record<string, unknown>
+}
+
+export async function fetchSessionBridgeDirectories(
+  serverUrl: string | undefined,
+  path?: string,
+): Promise<SessionBridgeDirectoryBrowseResponse> {
+  const base = trimTrailingSlash(serverUrl || DEFAULT_SERVER_URL)
+  const params = new URLSearchParams()
+  const normalizedPath = String(path || '').trim()
+  if (normalizedPath) {
+    params.set('path', normalizedPath)
+  }
+  const suffix = params.toString() ? `?${params.toString()}` : ''
+  const response = await fetch(`${base}${DIRECTORY_BROWSER_PATH}${suffix}`, {
+    method: 'GET',
+  })
+  if (!response.ok) {
+    throw new Error(`failed to browse directories: ${response.status}`)
+  }
+  return (await response.json()) as SessionBridgeDirectoryBrowseResponse
 }
 
 // ---------------------------------------------------------------------------
@@ -215,6 +248,7 @@ export interface AgentBrandInfo {
   display_name: string
   badge_icon: string
   models: string[]
+  default_permission_mode?: string
 }
 
 export async function fetchAgentBrands(

@@ -21,7 +21,6 @@ from .session_bridge_shared import (
     _extract_message_content,
     _resolve_default_chat_cwd,
     _resolve_permission_mode,
-    _resolve_permission_settings,
 )
 
 logger = logging.getLogger(__name__)
@@ -32,6 +31,23 @@ DEFAULT_CODEX_APPROVAL_TIMEOUT_SEC = 300.0
 CODEX_CLI_IDLE_TIMEOUT_ENV = "CODEX_CLI_IDLE_TIMEOUT_SEC"
 CODEX_CLI_MAX_TIMEOUT_ENV = "CODEX_CLI_MAX_TIMEOUT_SEC"
 CODEX_CLI_APPROVAL_TIMEOUT_ENV = "CODEX_CLI_APPROVAL_TIMEOUT_SEC"
+
+
+def _resolve_codex_exec_permission_settings(
+    permission_mode: Optional[str],
+    approval_policy: Optional[str],
+    sandbox_mode: Optional[str],
+) -> tuple[str, str, str]:
+    effective_mode = _resolve_permission_mode(
+        permission_mode=permission_mode,
+        approval_policy=approval_policy,
+        sandbox_mode=sandbox_mode,
+    )
+    if effective_mode == PERMISSION_MODE_FULL:
+        return effective_mode, "never", "danger-full-access"
+    # codex exec 0.120.0 does not accept -a/--ask-for-approval.
+    # The closest accurate runtime description is writable workspace + never ask.
+    return effective_mode, "never", "workspace-write"
 
 
 def _read_timeout_env(name: str, default: float) -> float:
@@ -150,7 +166,7 @@ class CodexSessionChatService:
         approval_policy: Optional[str],
         sandbox_mode: Optional[str],
     ) -> None:
-        effective_mode, _, _ = _resolve_permission_settings(
+        effective_mode, _, _ = _resolve_codex_exec_permission_settings(
             permission_mode=permission_mode,
             approval_policy=approval_policy,
             sandbox_mode=sandbox_mode,
@@ -333,7 +349,7 @@ class CodexSessionChatService:
             raise CodexSessionChatError("message is required")
 
         effective_cwd = str(Path((cwd or self.default_cwd)).expanduser())
-        effective_permission_mode, _, _ = _resolve_permission_settings(
+        effective_permission_mode, _, _ = _resolve_codex_exec_permission_settings(
             permission_mode=permission_mode,
             approval_policy=approval_policy,
             sandbox_mode=sandbox_mode,
@@ -463,7 +479,7 @@ class CodexSessionChatService:
                     runtime_approval = str(payload.get("approval_policy") or "")
                     runtime_sandbox = str(sandbox.get("type") or "")
                     if permission_mode is not None and str(permission_mode).strip():
-                        _, runtime_approval, runtime_sandbox = _resolve_permission_settings(
+                        _, runtime_approval, runtime_sandbox = _resolve_codex_exec_permission_settings(
                             permission_mode=effective_permission_mode,
                             approval_policy=None,
                             sandbox_mode=None,
@@ -780,7 +796,7 @@ class CodexSessionChatService:
             branch = ""
         runtime_model = str(runtime_context.get("model") or model or "")
         runtime_effort = str(runtime_context.get("effort") or reasoning_effort or "")
-        requested_mode, requested_approval, requested_sandbox = _resolve_permission_settings(
+        requested_mode, requested_approval, requested_sandbox = _resolve_codex_exec_permission_settings(
             permission_mode=permission_mode,
             approval_policy=approval_policy,
             sandbox_mode=sandbox_mode,

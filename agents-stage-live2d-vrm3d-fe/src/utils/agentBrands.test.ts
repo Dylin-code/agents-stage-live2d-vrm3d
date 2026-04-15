@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_AGENT_BRANDS,
   buildAgentBrandCatalog,
+  getAgentBrandDefaultPermissionMode,
   getAgentBrandModels,
   normalizeAgentBrandCatalog,
 } from './agentBrands'
@@ -24,6 +25,7 @@ describe('normalizeAgentBrandCatalog', () => {
         display_name: 'Claude',
         badge_icon: '/brand/claude-badge.svg',
         models: ['claude-sonnet-4-6'],
+        default_permission_mode: 'default',
       },
     ])
   })
@@ -51,8 +53,23 @@ describe('normalizeAgentBrandCatalog', () => {
         display_name: 'Codex',
         badge_icon: '/brand/codex-badge.svg',
         models: ['gpt-5.3-codex'],
+        default_permission_mode: 'default',
       },
     ])
+  })
+
+  it('keeps brand-specific default permission mode from server metadata', () => {
+    const result = normalizeAgentBrandCatalog([
+      {
+        brand: 'codex',
+        display_name: 'Codex',
+        badge_icon: '/brand/codex-badge.svg',
+        models: ['gpt-5.4'],
+        default_permission_mode: 'full',
+      },
+    ])
+
+    expect(result[0]?.default_permission_mode).toBe('full')
   })
 })
 
@@ -93,5 +110,25 @@ describe('getAgentBrandModels', () => {
 
   it('falls back to codex models when brand is missing', () => {
     expect(getAgentBrandModels(DEFAULT_AGENT_BRANDS, 'missing-brand')).toEqual(DEFAULT_AGENT_BRANDS[0].models)
+  })
+})
+
+describe('getAgentBrandDefaultPermissionMode', () => {
+  it('returns brand-specific default permission mode from catalog', () => {
+    const catalog = buildAgentBrandCatalog([
+      {
+        brand: 'codex',
+        display_name: 'Codex',
+        badge_icon: '/brand/codex-badge.svg',
+        models: ['gpt-5.4'],
+        default_permission_mode: 'full',
+      },
+    ])
+
+    expect(getAgentBrandDefaultPermissionMode(catalog, 'codex')).toBe('full')
+  })
+
+  it('falls back to default when brand metadata is missing', () => {
+    expect(getAgentBrandDefaultPermissionMode(DEFAULT_AGENT_BRANDS, 'missing-brand')).toBe('default')
   })
 })

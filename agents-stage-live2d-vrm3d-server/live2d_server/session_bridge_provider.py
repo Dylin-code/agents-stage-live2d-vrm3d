@@ -1,6 +1,7 @@
 """Agent provider router — dispatches to the correct CLI chat service based on brand."""
 
 import os
+import platform
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Union
@@ -111,6 +112,13 @@ class AgentProviderRouter:
         return list(AgentProviderRouter.brand_metadata(brand).models)
 
     @staticmethod
+    def default_permission_mode(brand: str) -> str:
+        normalized = AgentProviderRouter.normalize_brand(brand)
+        if normalized == AGENT_BRAND_CODEX and platform.system() == "Windows":
+            return "full"
+        return "default"
+
+    @staticmethod
     def brand_catalog() -> list[dict[str, Any]]:
         return [
             {
@@ -118,6 +126,7 @@ class AgentProviderRouter:
                 "display_name": metadata.display_name,
                 "badge_icon": metadata.badge_icon,
                 "models": list(metadata.models),
+                "default_permission_mode": AgentProviderRouter.default_permission_mode(metadata.brand),
             }
             for metadata in _BRAND_METADATA.values()
         ]

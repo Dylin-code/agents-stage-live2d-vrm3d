@@ -10,7 +10,11 @@ from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisco
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from .session_bridge_chat import CodexSessionChatError, CodexSessionChatService
+from .session_bridge_chat import (
+    CodexSessionChatError,
+    CodexSessionChatService,
+    _resolve_codex_exec_permission_settings,
+)
 from .session_bridge_claude_chat import ClaudeSessionChatError
 from .session_bridge_provider import AgentProviderRouter
 from .session_bridge_runtime import SessionBridgeService
@@ -223,19 +227,22 @@ async def _bridge_chat_with_service(
     session_mode = session.permission_mode if (session and str(session.permission_mode or "").strip()) else None
     mode_source = requested_mode if requested_mode is not None else session_mode
     if requested_mode is not None:
-        effective_permission_mode, effective_approval_policy, effective_sandbox_mode = _resolve_permission_settings(
+        effective_permission_mode, effective_approval_policy, effective_sandbox_mode = _resolve_permission_settings_for_brand(
+            brand,
             permission_mode=mode_source,
             approval_policy=None,
             sandbox_mode=None,
         )
     elif mode_source is not None:
-        effective_permission_mode, effective_approval_policy, effective_sandbox_mode = _resolve_permission_settings(
+        effective_permission_mode, effective_approval_policy, effective_sandbox_mode = _resolve_permission_settings_for_brand(
+            brand,
             permission_mode=mode_source,
             approval_policy=None,
             sandbox_mode=None,
         )
     else:
-        effective_permission_mode, effective_approval_policy, effective_sandbox_mode = _resolve_permission_settings(
+        effective_permission_mode, effective_approval_policy, effective_sandbox_mode = _resolve_permission_settings_for_brand(
+            brand,
             permission_mode=None,
             approval_policy=request.approval_policy if request.approval_policy is not None else (session.approval_policy if session else None),
             sandbox_mode=request.sandbox_mode if request.sandbox_mode is not None else (session.sandbox_mode if session else None),
@@ -344,7 +351,8 @@ async def _bridge_chat_with_service(
             )
             if requested_mode is not None:
                 runtime_permission_mode = effective_permission_mode
-                _, runtime_approval, runtime_sandbox = _resolve_permission_settings(
+                _, runtime_approval, runtime_sandbox = _resolve_permission_settings_for_brand(
+                    brand,
                     permission_mode=runtime_permission_mode,
                     approval_policy=None,
                     sandbox_mode=None,
@@ -467,11 +475,12 @@ async def bridge_codex_chat_approval(request: AgentChatApprovalRequest) -> dict[
 
 @router.post("/codex/session/new")
 async def bridge_codex_new_session(request: AgentNewSessionRequest) -> dict[str, Any]:
+    effective_permission_mode = _coerce_permission_mode_for_brand(AGENT_BRAND_CODEX, request.permission_mode)
     payload = await codex_chat_service.create_session(
         cwd=request.cwd,
         model=request.model,
         reasoning_effort=request.reasoning_effort,
-        permission_mode=request.permission_mode,
+        permission_mode=effective_permission_mode,
         approval_policy=request.approval_policy,
         sandbox_mode=request.sandbox_mode,
         plan_mode=request.plan_mode,
@@ -490,9 +499,10 @@ async def bridge_codex_new_session(request: AgentNewSessionRequest) -> dict[str,
             payload["plan_mode"] = bool(history_runtime.get("plan_mode"))
         if isinstance(history_runtime.get("plan_mode_fallback"), bool):
             payload["plan_mode_fallback"] = bool(history_runtime.get("plan_mode_fallback"))
-    if request.permission_mode is not None and str(request.permission_mode).strip():
-        mode, approval, sandbox = _resolve_permission_settings(
-            permission_mode=request.permission_mode,
+    if effective_permission_mode is not None and str(effective_permission_mode).strip():
+        mode, approval, sandbox = _resolve_permission_settings_for_brand(
+            AGENT_BRAND_CODEX,
+            permission_mode=effective_permission_mode,
             approval_policy=None,
             sandbox_mode=None,
         )
@@ -501,7 +511,7 @@ async def bridge_codex_new_session(request: AgentNewSessionRequest) -> dict[str,
         payload["sandbox_mode"] = sandbox
     if not payload.get("permission_mode"):
         payload["permission_mode"] = _resolve_permission_mode(
-            request.permission_mode,
+            effective_permission_mode,
             approval_policy=payload.get("approval_policy"),
             sandbox_mode=payload.get("sandbox_mode"),
         )
@@ -553,6 +563,34 @@ def _normalize_agent_brand_or_400(value: Optional[str]) -> str:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+def _resolve_permission_settings_for_brand(
+    brand: str,
+    *,
+    permission_mode: Optional[str],
+    approval_policy: Optional[str],
+    sandbox_mode: Optional[str],
+) -> tuple[str, str, str]:
+    if brand == AGENT_BRAND_CODEX:
+        return _resolve_codex_exec_permission_settings(
+            permission_mode=permission_mode,
+            approval_policy=approval_policy,
+            sandbox_mode=sandbox_mode,
+        )
+    return _resolve_permission_settings(
+        permission_mode=permission_mode,
+        approval_policy=approval_policy,
+        sandbox_mode=sandbox_mode,
+    )
+
+
+def _coerce_permission_mode_for_brand(brand: str, permission_mode: Optional[str]) -> Optional[str]:
+    normalized = str(permission_mode or "").strip().lower()
+    if brand == AGENT_BRAND_CODEX and AgentProviderRouter.default_permission_mode(brand) == "full":
+        if not normalized or normalized == PERMISSION_MODE_DEFAULT:
+            return "full"
+    return permission_mode
+
+
 @router.post("/agent/chat")
 async def bridge_agent_chat(request: AgentChatRequest) -> StreamingResponse:
     """Unified chat endpoint — routes to Codex or Claude based on agent_brand."""
@@ -597,12 +635,13 @@ async def bridge_agent_new_session(request: AgentNewSessionRequest) -> dict[str,
     """Unified new-session endpoint — routes to correct CLI by agent_brand."""
     brand = _normalize_agent_brand_or_400(request.agent_brand or AGENT_BRAND_CODEX)
     chat_service = agent_provider.get_chat_service(brand)
+    effective_permission_mode = _coerce_permission_mode_for_brand(brand, request.permission_mode)
 
     payload = await chat_service.create_session(
         cwd=request.cwd,
         model=request.model,
         reasoning_effort=request.reasoning_effort,
-        permission_mode=request.permission_mode,
+        permission_mode=effective_permission_mode,
         approval_policy=request.approval_policy,
         sandbox_mode=request.sandbox_mode,
         plan_mode=request.plan_mode,
@@ -622,16 +661,17 @@ async def bridge_agent_new_session(request: AgentNewSessionRequest) -> dict[str,
             payload["plan_mode"] = bool(history_runtime.get("plan_mode"))
         if isinstance(history_runtime.get("plan_mode_fallback"), bool):
             payload["plan_mode_fallback"] = bool(history_runtime.get("plan_mode_fallback"))
-    if request.permission_mode is not None and str(request.permission_mode).strip():
-        mode, approval, sandbox = _resolve_permission_settings(
-            permission_mode=request.permission_mode, approval_policy=None, sandbox_mode=None,
+    if effective_permission_mode is not None and str(effective_permission_mode).strip():
+        mode, approval, sandbox = _resolve_permission_settings_for_brand(
+            brand,
+            permission_mode=effective_permission_mode, approval_policy=None, sandbox_mode=None,
         )
         payload["permission_mode"] = mode
         payload["approval_policy"] = approval
         payload["sandbox_mode"] = sandbox
     if not payload.get("permission_mode"):
         payload["permission_mode"] = _resolve_permission_mode(
-            request.permission_mode,
+            effective_permission_mode,
             approval_policy=payload.get("approval_policy"),
             sandbox_mode=payload.get("sandbox_mode"),
         )
@@ -669,6 +709,105 @@ class OpenFileRequest(BaseModel):
     path: str
     line: Optional[int] = None
     editor: Optional[str] = None  # "vscode" | "cursor" | "system"
+
+
+class DirectoryBrowseEntry(BaseModel):
+    name: str
+    path: str
+
+
+class DirectoryBrowseResponse(BaseModel):
+    current_path: str
+    parent_path: Optional[str]
+    directories: list[DirectoryBrowseEntry]
+    ancestors: list[DirectoryBrowseEntry]
+
+
+def _normalize_directory_browse_path(path: Optional[str]) -> Optional[Path]:
+    raw_path = str(path or "").strip()
+    if not raw_path:
+        return None
+    if platform.system() == "Windows" and len(raw_path) == 2 and raw_path[1] == ":":
+        raw_path = f"{raw_path}\\"
+    return Path(raw_path).expanduser().resolve(strict=False)
+
+
+def _list_directory_roots() -> list[DirectoryBrowseEntry]:
+    if platform.system() == "Windows":
+        entries: list[DirectoryBrowseEntry] = []
+        for code in range(ord("A"), ord("Z") + 1):
+            root = Path(f"{chr(code)}:/")
+            if root.exists():
+                entries.append(DirectoryBrowseEntry(name=str(root), path=str(root)))
+        return entries
+    return [DirectoryBrowseEntry(name="/", path="/")]
+
+
+def _build_directory_ancestors(path: Path) -> list[DirectoryBrowseEntry]:
+    chain: list[Path] = []
+    current = path
+    while True:
+        chain.append(current)
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    chain.reverse()
+    return [
+        DirectoryBrowseEntry(
+            name=item.name or item.anchor or str(item),
+            path=str(item),
+        )
+        for item in chain
+    ]
+
+
+def _list_subdirectories(path: Path) -> list[DirectoryBrowseEntry]:
+    try:
+        children = list(path.iterdir())
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=f"無法讀取目錄：{path}") from exc
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=f"無法列出目錄：{path}") from exc
+
+    directories: list[DirectoryBrowseEntry] = []
+    for child in children:
+        try:
+            if not child.is_dir():
+                continue
+        except OSError:
+            continue
+        directories.append(
+            DirectoryBrowseEntry(
+                name=child.name or str(child),
+                path=str(child.resolve(strict=False)),
+            )
+        )
+    directories.sort(key=lambda item: item.name.casefold())
+    return directories
+
+
+@router.get("/fs/directories")
+async def bridge_browse_directories(path: Optional[str] = None) -> DirectoryBrowseResponse:
+    target_path = _normalize_directory_browse_path(path)
+    if target_path is None:
+        return DirectoryBrowseResponse(
+            current_path="",
+            parent_path=None,
+            directories=_list_directory_roots(),
+            ancestors=[],
+        )
+    if not target_path.exists():
+        raise HTTPException(status_code=404, detail=f"目錄不存在：{target_path}")
+    if not target_path.is_dir():
+        raise HTTPException(status_code=400, detail=f"不是目錄：{target_path}")
+    parent_path = None if target_path.parent == target_path else str(target_path.parent)
+    return DirectoryBrowseResponse(
+        current_path=str(target_path),
+        parent_path=parent_path,
+        directories=_list_subdirectories(target_path),
+        ancestors=_build_directory_ancestors(target_path),
+    )
 
 
 _EDITOR_COMMANDS: list[tuple[str, str]] = [

@@ -3,6 +3,7 @@ export interface AgentBrandCatalogItem {
   display_name: string
   badge_icon: string
   models: string[]
+  default_permission_mode?: string
 }
 
 export const DEFAULT_AGENT_BRANDS: AgentBrandCatalogItem[] = [
@@ -11,12 +12,14 @@ export const DEFAULT_AGENT_BRANDS: AgentBrandCatalogItem[] = [
     display_name: 'Codex',
     badge_icon: '/brand/codex-badge.svg',
     models: ['gpt-5.3-codex', 'gpt-5.4', 'gpt-5.2-codex', 'gpt-5.1-codex-max', 'gpt-5.2'],
+    default_permission_mode: 'default',
   },
   {
     brand: 'claude',
     display_name: 'Claude',
     badge_icon: '/brand/claude-badge.svg',
     models: ['claude-sonnet-4-6', 'claude-opus-4-6', 'claude-haiku-4-5-20251001', 'sonnet', 'opus', 'haiku'],
+    default_permission_mode: 'default',
   },
 ]
 
@@ -30,6 +33,7 @@ export function normalizeAgentBrandCatalog(input: unknown): AgentBrandCatalogIte
       const brand = String(record.brand || '').trim().toLowerCase()
       const displayName = String(record.display_name || '').trim()
       const badgeIcon = String(record.badge_icon || '').trim()
+      const defaultPermissionMode = String(record.default_permission_mode || '').trim().toLowerCase() || 'default'
       const models = Array.isArray(record.models)
         ? record.models
             .filter((model): model is string => typeof model === 'string')
@@ -42,6 +46,7 @@ export function normalizeAgentBrandCatalog(input: unknown): AgentBrandCatalogIte
         display_name: displayName,
         badge_icon: badgeIcon,
         models,
+        default_permission_mode: defaultPermissionMode,
       }
     })
     .filter((item): item is AgentBrandCatalogItem => !!item)
@@ -57,4 +62,10 @@ export function getAgentBrandModels(catalog: AgentBrandCatalogItem[], brand?: st
   const target = catalog.find((item) => item.brand === normalized)
   if (target) return target.models
   return catalog[0]?.models || []
+}
+
+export function getAgentBrandDefaultPermissionMode(catalog: AgentBrandCatalogItem[], brand?: string): string {
+  const normalized = String(brand || '').trim().toLowerCase()
+  const target = catalog.find((item) => item.brand === normalized)
+  return String(target?.default_permission_mode || 'default')
 }

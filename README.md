@@ -13,6 +13,8 @@
 
 - 已新增 session / 對話層級的「角色個性」功能，可在建立 session 或續聊時切換 persona
 - 2D / 3D 舞台左上角齒輪已加入角色個性 CRUD 編輯
+- 新建 session 的 `cwd` 已改成可透過後端目錄瀏覽器挑選，遠端模式下會列出 server 主機的目錄而不是前端裝置本機目錄
+- Windows 上建立 `Codex` session 時，預設 `permission mode` 會自動使用 `full`，避免 `workspace-write` sandbox 在該環境下無法啟動
 
 ## 核心能力
 
@@ -29,6 +31,7 @@
 
 - 建立 brand-aware 新 session
 - 依品牌切換可選模型清單
+- 依品牌與平台提供預設 `permission mode`
 - 統一聊天串流與工具審批流程
 - 讀取不同品牌的本地 session 目錄並同步狀態
 - 對外提供品牌 catalog API：`/api/session-bridge/agent/brands`
@@ -198,6 +201,15 @@ npm run dev
 - `plan mode`
 - `角色個性`
 
+`cwd` 欄位除了手動輸入，也可直接打開後端目錄瀏覽器，列出 server 所在主機的目錄結構供前端選取；這樣在遠端模式下，其他裝置仍可正確挑選遠端工作目錄。
+
+`permission mode` 的預設值會依品牌 catalog 決定：
+
+- Windows + `Codex`：預設 `full`
+- 其他情況：預設 `default`
+
+目前這樣設計是因為這台環境上的 `Codex workspace-write` sandbox 在 Windows 會出現 `CreateProcessAsUserW failed: 5`，因此建立新 session 時直接預設為 `full`，mac 不受影響。
+
 前端會透過統一 API 建立 brand-aware session，不需要為不同品牌切換不同頁面。
 
 ### 3. 在 3D 舞台檢視 agent
@@ -227,9 +239,15 @@ npm run dev
 - `POST /api/session-bridge/agent/chat`
 - `POST /api/session-bridge/agent/chat/approval`
 - `GET /api/session-bridge/agent/brands`
+- `GET /api/session-bridge/fs/directories`
 - `WS /api/session-bridge/ws`
 
 如果你要把這個專案接到其他前端或自動化流程，優先從這組 API 開始整合。
+
+其中：
+
+- `GET /api/session-bridge/agent/brands` 會回傳品牌顯示名稱、badge icon、可選模型，以及 `default_permission_mode`
+- `GET /api/session-bridge/fs/directories` 會列出後端主機的目錄結構，供新建 session 時挑選 `cwd`
 
 ## 專案目錄
 

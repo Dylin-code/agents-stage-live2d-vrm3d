@@ -222,6 +222,12 @@
     >
       <PersonaEditorPanel v-model:personas="personaEditorDrafts" :personas="personaEditorDrafts" />
     </Modal>
+    <SessionDirectoryBrowserModal
+      v-model:visible="directoryBrowserVisible"
+      :initial-path="newSessionForm.cwd"
+      :server-url="serverUrl"
+      @select="handleDirectorySelected"
+    />
 
     <button v-if="isPortraitMode" class="portrait-sidebar-toggle" type="button" @click="portraitSidebarVisible = !portraitSidebarVisible">
       ☰
@@ -249,24 +255,28 @@
         <select
           v-model="newSessionCwdSelection"
           class="new-session-cwd-select"
-          @change="onNewSessionCwdSelectionChange"
+          @change="handleNewSessionCwdSelectionChange"
         >
-          <option value="">選擇歷史目錄或新路徑</option>
+          <option value="">選擇最近使用的工作目錄</option>
           <option v-for="cwd in newSessionCwdOptions" :key="cwd" :value="cwd">{{ cwd }}</option>
-          <option value="__pick_new__">+ 新路徑（選擇器）</option>
         </select>
-        <input
-          v-model.trim="newSessionForm.cwd"
-          type="text"
-          list="new-session-cwd-options"
-          class="new-session-cwd-input"
-          placeholder="選擇歷史目錄或輸入 /path/to/workspace"
-        >
+        <div class="new-session-cwd-row">
+          <input
+            v-model.trim="newSessionForm.cwd"
+            type="text"
+            list="new-session-cwd-options"
+            class="new-session-cwd-input"
+            placeholder="選擇、瀏覽或手動輸入工作目錄"
+          >
+          <button class="new-session-cwd-browse-btn" type="button" @click="directoryBrowserVisible = true">
+            瀏覽
+          </button>
+        </div>
         <datalist id="new-session-cwd-options">
           <option v-for="cwd in newSessionCwdOptions" :key="cwd" :value="cwd"></option>
         </datalist>
         <div v-if="newSessionCwdOptions.length" class="new-session-cwd-hint">
-          可直接選擇最近使用的工作目錄，也可手動輸入新目錄
+          可直接選擇最近使用的工作目錄，也可透過後端目錄瀏覽器挑選或手動輸入
         </div>
         <div class="new-session-controls">
           <select v-model="newSessionForm.agent_brand" class="new-session-brand-select" @change="onBrandChange">
@@ -285,8 +295,8 @@
             <option value="high">high</option>
           </select>
           <select v-model="newSessionForm.permission_mode">
-            <option value="default">執行模式: 預設 (自動接受編輯)</option>
-            <option value="full">執行模式: 完整存取權</option>
+            <option value="default">執行模式: 預設 (工作區可寫 / Codex full-auto)</option>
+            <option value="full">執行模式: 完整存取權 (跳過 sandbox)</option>
           </select>
         </div>
         <label class="new-session-plan-toggle">
@@ -382,6 +392,7 @@ import { message, Modal } from 'ant-design-vue'
 
 import ChatPage from '../chat.vue'
 import PersonaEditorPanel from './PersonaEditorPanel.vue'
+import SessionDirectoryBrowserModal from './SessionDirectoryBrowserModal.vue'
 import { useSessionStage, type SessionStageRenderer } from '../../pages/session-stage/useSessionStage'
 import type { CharacterPersona } from '../../types/message'
 import type { SessionSnapshotItem } from '../../types/sessionState'
@@ -438,6 +449,7 @@ const vrmActorSlotConfig = ref<string[]>(loadVrmActorSlotConfig(vrmActorSlotOpti
 const frontendConfigFileInput = ref<HTMLInputElement | null>(null)
 const personaEditorVisible = ref(false)
 const personaEditorDrafts = ref<CharacterPersona[]>([])
+const directoryBrowserVisible = ref(false)
 
 const vrmGlobalGroundOffsetLabel = computed(() => `${(vrmGlobalGroundOffset.value * 100).toFixed(1)} cm`)
 const vrmActorScaleLabel = computed(() => `${Math.round(vrmActorScale.value * 100)}%`)
@@ -656,7 +668,16 @@ function handleSidebarSessionCardClick(session: SessionSnapshotItem): void {
   }))
 }
 
+function handleNewSessionCwdSelectionChange(): void {
+  void onNewSessionCwdSelectionChange()
+}
+
+function handleDirectorySelected(path: string): void {
+  newSessionForm.cwd = path
+}
+
 const {
+  serverUrl,
   MAX_SESSIONS,
   isLive2DRenderer,
   stageCanvas,
@@ -688,6 +709,7 @@ const {
   availablePersonas,
   agentBrandOptions,
   newSessionModelOptions,
+  applyNewSessionBrandDefaults,
   creatingNewSession,
   createNewSession,
   historySessions,
@@ -722,7 +744,7 @@ setupPortraitSwipeGesture(stageRootRef)
 
 function onBrandChange(): void {
   newSessionForm.model = ''
-  newSessionForm.permission_mode = 'default'
+  applyNewSessionBrandDefaults(newSessionForm.agent_brand)
   newSessionForm.plan_mode = false
 }
 
@@ -885,7 +907,6 @@ canvas {
 }
 
 .new-session-cwd-input {
-  margin-top: 6px;
   width: 100%;
   border: 1px solid rgba(182, 212, 248, 0.3);
   border-radius: 8px;
@@ -893,6 +914,28 @@ canvas {
   color: #ecf5ff;
   font-size: 12px;
   padding: 6px 8px;
+}
+
+.new-session-cwd-row {
+  margin-top: 6px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+}
+
+.new-session-cwd-browse-btn {
+  border: 1px solid rgba(182, 212, 248, 0.3);
+  border-radius: 8px;
+  background: rgba(11, 27, 45, 0.92);
+  color: #ecf5ff;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.new-session-cwd-browse-btn:hover {
+  background: rgba(15, 34, 56, 0.96);
 }
 
 .new-session-cwd-select {

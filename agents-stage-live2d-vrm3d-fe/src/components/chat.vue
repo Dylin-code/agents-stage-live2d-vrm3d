@@ -38,8 +38,8 @@
 
           <label>執行模式</label>
           <select v-model="agentOptions.permission_mode" @change="emitAgentOptions">
-            <option value="default">預設 (自動接受編輯)</option>
-            <option value="full">完整存取權</option>
+            <option value="default">預設 (工作區可寫 / Codex full-auto)</option>
+            <option value="full">完整存取權 (跳過 sandbox)</option>
           </select>
         </div>
 

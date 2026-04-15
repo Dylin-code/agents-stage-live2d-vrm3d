@@ -14,10 +14,10 @@ import {
 import {
   DEFAULT_AGENT_BRANDS,
   buildAgentBrandCatalog,
+  getAgentBrandDefaultPermissionMode,
   getAgentBrandModels,
   type AgentBrandCatalogItem,
 } from '../../utils/agentBrands'
-import { selectDirectoryViaLocalBridge } from '../../utils/api/localBridge'
 import { type Live2DModelItem } from '../../utils/api/live2dModels'
 import { getContextPercentLabel as getContextPercentLabelFromContext } from '../../utils/session-stage/contextWindow'
 import { stateText as getSessionStateText } from '../../utils/session-stage/stateText'
@@ -764,10 +764,17 @@ function resetNewSessionForm(): void {
   newSessionForm.cwd = ''
   newSessionForm.model = ''
   newSessionForm.reasoning_effort = ''
-  newSessionForm.permission_mode = 'default'
-  newSessionForm.plan_mode = false
   newSessionForm.agent_brand = 'codex'
+  newSessionForm.permission_mode = getAgentBrandDefaultPermissionMode(agentBrandCatalog.value, newSessionForm.agent_brand)
+  newSessionForm.plan_mode = false
   newSessionForm.persona_id = ''
+}
+
+function applyNewSessionBrandDefaults(brand?: string): void {
+  newSessionForm.permission_mode = getAgentBrandDefaultPermissionMode(
+    agentBrandCatalog.value,
+    brand || newSessionForm.agent_brand,
+  )
 }
 
 function syncNewSessionCwdSelection(): void {
@@ -776,58 +783,13 @@ function syncNewSessionCwdSelection(): void {
     newSessionCwdSelection.value = ''
     return
   }
-  newSessionCwdSelection.value = newSessionCwdOptions.value.includes(cwd) ? cwd : '__pick_new__'
-}
-
-async function pickDirectoryFromSystem(): Promise<string> {
-  const win = window as Window & {
-    electronAPI?: {
-      selectDirectory?: () => Promise<string | null | undefined>
-    }
-    showDirectoryPicker?: () => Promise<unknown>
-  }
-  const pickerPath = await win.electronAPI?.selectDirectory?.()
-  if (pickerPath && String(pickerPath).trim()) {
-    return String(pickerPath).trim()
-  }
-
-  try {
-    const bridgedPath = await selectDirectoryViaLocalBridge(serverUrl, {
-      title: '選擇工作目錄',
-      default_path: newSessionForm.cwd.trim() || undefined,
-    })
-    if (bridgedPath) {
-      return bridgedPath
-    }
-  } catch (error) {
-    console.warn('Local directory bridge unavailable, fallback to browser picker', error)
-  }
-
-  if (typeof win.showDirectoryPicker === 'function') {
-    try {
-      await win.showDirectoryPicker()
-    } catch {
-      // 使用者取消時不提示錯誤
-    }
-  }
-  return ''
+  newSessionCwdSelection.value = newSessionCwdOptions.value.includes(cwd) ? cwd : ''
 }
 
 async function onNewSessionCwdSelectionChange(): Promise<void> {
   const selected = newSessionCwdSelection.value
   if (!selected) return
-  if (selected !== '__pick_new__') {
-    newSessionForm.cwd = selected
-    return
-  }
-  const picked = await pickDirectoryFromSystem()
-  if (!picked) {
-    newSessionCwdSelection.value = ''
-    message.warning('目前無法透過本地橋接取得絕對路徑，請確認後端服務可用，或手動輸入工作目錄')
-    return
-  }
-  newSessionForm.cwd = picked
-  syncNewSessionCwdSelection()
+  newSessionForm.cwd = selected
 }
 
 async function createNewSession(): Promise<void> {
@@ -1016,6 +978,7 @@ async function refreshAgentBrandCatalog(): Promise<void> {
     console.warn('Failed to fetch agent brands, fallback to local defaults', error)
     agentBrandCatalog.value = DEFAULT_AGENT_BRANDS
   }
+  applyNewSessionBrandDefaults()
 }
 
 onMounted(async () => {
@@ -1098,6 +1061,7 @@ onUnmounted(() => {
 })
 
   return {
+    serverUrl,
     MAX_SESSIONS,
     isLive2DRenderer,
     stageCanvas,
@@ -1129,6 +1093,7 @@ onUnmounted(() => {
     availablePersonas,
     agentBrandOptions,
     newSessionModelOptions,
+    applyNewSessionBrandDefaults,
     creatingNewSession,
     createNewSession,
     historySessions,

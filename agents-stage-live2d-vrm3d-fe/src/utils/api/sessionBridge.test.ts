@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   createSessionBridgeSession,
+  fetchSessionBridgeDirectories,
   resolveBridgeWsUrl,
   resolveConversationUrl,
   resolveHistoryUrl,
@@ -85,6 +86,30 @@ describe('createSessionBridgeSession', () => {
       'http://127.0.0.1:8000/api/session-bridge/agent/session/new',
       expect.objectContaining({
         method: 'POST',
+      }),
+    )
+  })
+})
+
+describe('fetchSessionBridgeDirectories', () => {
+  it('calls backend directory browser endpoint with encoded path', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        current_path: 'C:\\repo',
+        parent_path: 'C:\\',
+        directories: [],
+        ancestors: [],
+      }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await fetchSessionBridgeDirectories('http://127.0.0.1:8000/', 'C:\\repo path')
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8000/api/session-bridge/fs/directories?path=C%3A%5Crepo+path',
+      expect.objectContaining({
+        method: 'GET',
       }),
     )
   })

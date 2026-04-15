@@ -4,7 +4,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi import HTTPException
 
@@ -30,6 +30,7 @@ from live2d_server.session_bridge import (
     bridge_codex_new_session,
     bridge_agent_chat_approval,
     bridge_agent_brands,
+    bridge_browse_directories,
     bridge_conversation,
     bridge_git_branches,
     bridge_git_switch,
@@ -1072,7 +1073,7 @@ class CodexSessionChatServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["cwd"], "/tmp/workspace")
         self.assertEqual(payload["model"], "gpt-5-codex")
         self.assertEqual(payload["permission_mode"], "default")
-        self.assertEqual(payload["approval_policy"], "on-request")
+        self.assertEqual(payload["approval_policy"], "never")
         self.assertEqual(payload["sandbox_mode"], "workspace-write")
         cmd = recorded_args.get("cmd", [])
         self.assertIn("--full-auto", cmd)
@@ -1102,7 +1103,7 @@ class CodexSessionChatServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["model"], "gpt-5.3-codex")
         self.assertEqual(payload["effort"], "high")
         self.assertEqual(payload["permission_mode"], "default")
-        self.assertEqual(payload["approval_policy"], "on-request")
+        self.assertEqual(payload["approval_policy"], "never")
         self.assertEqual(payload["sandbox_mode"], "workspace-write")
 
     async def test_stream_prompt_skips_approval_request_in_full_mode(self) -> None:
@@ -1319,7 +1320,7 @@ class BridgeCodexChatApiTest(unittest.IsolatedAsyncioTestCase):
                         await _collect_stream_body(response)
 
         self.assertEqual(captured.get("permission_mode"), "default")
-        self.assertEqual(captured.get("approval_policy"), "on-request")
+        self.assertEqual(captured.get("approval_policy"), "never")
         self.assertEqual(captured.get("sandbox_mode"), "workspace-write")
 
     async def test_bridge_codex_chat_request_permission_mode_overrides_session_runtime(self) -> None:
@@ -1352,7 +1353,7 @@ class BridgeCodexChatApiTest(unittest.IsolatedAsyncioTestCase):
                         await _collect_stream_body(response)
 
         self.assertEqual(captured.get("permission_mode"), "default")
-        self.assertEqual(captured.get("approval_policy"), "on-request")
+        self.assertEqual(captured.get("approval_policy"), "never")
         self.assertEqual(captured.get("sandbox_mode"), "workspace-write")
 
     async def test_bridge_codex_chat_request_full_mode_uses_dangerous_runtime(self) -> None:
@@ -1360,7 +1361,7 @@ class BridgeCodexChatApiTest(unittest.IsolatedAsyncioTestCase):
             session_id="00000000-0000-0000-0000-000000000129",
             display_name="session-129",
             cwd="/tmp/work",
-            approval_policy="on-request",
+            approval_policy="never",
             sandbox_mode="workspace-write",
             permission_mode="default",
         )
@@ -1417,7 +1418,7 @@ class BridgeCodexChatApiTest(unittest.IsolatedAsyncioTestCase):
                         await _collect_stream_body(response)
 
         self.assertEqual(captured.get("permission_mode"), "default")
-        self.assertEqual(captured.get("approval_policy"), "on-request")
+        self.assertEqual(captured.get("approval_policy"), "never")
         self.assertEqual(captured.get("sandbox_mode"), "workspace-write")
 
     async def test_bridge_codex_chat_streams_text_and_done(self) -> None:
@@ -1425,7 +1426,7 @@ class BridgeCodexChatApiTest(unittest.IsolatedAsyncioTestCase):
             session_id="00000000-0000-0000-0000-000000000126",
             display_name="session-126",
             cwd="/tmp/work",
-            approval_policy="on-request",
+            approval_policy="never",
             sandbox_mode="workspace-write",
         )
 
@@ -1495,7 +1496,7 @@ class BridgeCodexChatApiTest(unittest.IsolatedAsyncioTestCase):
             "model": "gpt-5-codex",
             "effort": "high",
             "permission_mode": "default",
-            "approval_policy": "on-request",
+            "approval_policy": "never",
             "sandbox_mode": "workspace-write",
             "plan_mode": False,
             "plan_mode_fallback": False,
@@ -1523,7 +1524,7 @@ class BridgeCodexChatApiTest(unittest.IsolatedAsyncioTestCase):
             "model": "gpt-5-codex",
             "effort": "medium",
             "permission_mode": "default",
-            "approval_policy": "on-request",
+            "approval_policy": "never",
             "sandbox_mode": "workspace-write",
             "plan_mode": False,
             "plan_mode_fallback": False,
@@ -1553,7 +1554,7 @@ class BridgeCodexChatApiTest(unittest.IsolatedAsyncioTestCase):
             "model": "gpt-5-codex",
             "effort": "high",
             "permission_mode": "default",
-            "approval_policy": "on-request",
+            "approval_policy": "never",
             "sandbox_mode": "workspace-write",
             "plan_mode": False,
             "plan_mode_fallback": False,
@@ -1584,7 +1585,7 @@ class BridgeCodexChatApiTest(unittest.IsolatedAsyncioTestCase):
                     )
 
         self.assertEqual(payload["permission_mode"], "default")
-        self.assertEqual(payload["approval_policy"], "on-request")
+        self.assertEqual(payload["approval_policy"], "never")
         self.assertEqual(payload["sandbox_mode"], "workspace-write")
 
 
@@ -1630,6 +1631,11 @@ class AgentProviderRouterTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             AgentProviderRouter.normalize_brand("copilot")
 
+    @patch("live2d_server.session_bridge_provider.platform.system", return_value="Windows")
+    def test_default_permission_mode_uses_full_for_codex_on_windows(self, _system: MagicMock) -> None:
+        self.assertEqual(AgentProviderRouter.default_permission_mode("codex"), "full")
+        self.assertEqual(AgentProviderRouter.default_permission_mode("claude"), "default")
+
     def test_supported_brands_expose_metadata_for_ui(self) -> None:
         payload = asyncio.run(bridge_agent_brands())
         self.assertIn("brands", payload)
@@ -1638,6 +1644,14 @@ class AgentProviderRouterTest(unittest.TestCase):
         self.assertEqual(codex["display_name"], "Codex")
         self.assertTrue(codex["models"])
         self.assertEqual(codex["badge_icon"], "/brand/codex-badge.svg")
+
+    @patch("live2d_server.session_bridge_provider.platform.system", return_value="Windows")
+    def test_supported_brands_include_default_permission_mode(self, _system: MagicMock) -> None:
+        payload = asyncio.run(bridge_agent_brands())
+        codex = next(item for item in payload["brands"] if item["brand"] == "codex")
+        claude = next(item for item in payload["brands"] if item["brand"] == "claude")
+        self.assertEqual(codex["default_permission_mode"], "full")
+        self.assertEqual(claude["default_permission_mode"], "default")
 
 
 class AgentProviderApiContractTest(unittest.IsolatedAsyncioTestCase):
@@ -1763,6 +1777,31 @@ class BridgeConversationApiTest(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(payload["session_id"], "00000000-0000-0000-0000-000000000199")
         self.assertEqual(payload["messages"][0]["content"], "hello")
+
+
+class BridgeDirectoryBrowseApiTest(unittest.IsolatedAsyncioTestCase):
+    async def test_bridge_browse_directories_lists_subdirectories(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            (base / "alpha").mkdir()
+            (base / "beta").mkdir()
+            (base / "notes.txt").write_text("demo", encoding="utf-8")
+
+            payload = await bridge_browse_directories(str(base))
+
+        self.assertEqual(payload.current_path, str(base.resolve()))
+        self.assertEqual(payload.parent_path, str(base.resolve().parent))
+        self.assertEqual([item.name for item in payload.directories], ["alpha", "beta"])
+        self.assertEqual(payload.ancestors[-1].path, str(base.resolve()))
+
+    async def test_bridge_browse_directories_raises_404_for_missing_path(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            missing_path = str((Path(temp_dir) / "missing").resolve())
+
+            with self.assertRaises(HTTPException) as error_context:
+                await bridge_browse_directories(missing_path)
+
+        self.assertEqual(error_context.exception.status_code, 404)
 
 
 if __name__ == "__main__":
