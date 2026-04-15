@@ -142,6 +142,15 @@ def create_app(mode: str = "local", config: Config | None = None) -> FastAPI:
 
     app = FastAPI(lifespan=lifespan)
 
+    if not static_path:
+        @app.get("/")
+        async def root_heartbeat() -> dict[str, str]:
+            return {
+                "ok": "true",
+                "service": "agents-stage-live2d-vrm3d-server",
+                "mode": mode,
+            }
+
     # Store mode & config on app.state for middleware/WebSocket access
     app.state.mode = mode
     if mode == "remote":
