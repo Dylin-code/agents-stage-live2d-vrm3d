@@ -18,6 +18,7 @@ from live2d_server.rag.router import router as rag_router
 from live2d_server.router import router, start_live2d_preview_warmup
 from live2d_server.session_bridge import router as session_bridge_router
 from live2d_server.session_bridge import start_session_bridge, stop_session_bridge
+from live2d_server.web_terminal import router as terminal_router
 
 class SPAStaticFiles(StaticFiles):
     """SPA-friendly static files: serves index.html for any path without a matching file."""
@@ -50,6 +51,7 @@ async def lifespan(app: FastAPI):
     app.include_router(router)
     app.include_router(rag_router)
     app.include_router(session_bridge_router)
+    app.include_router(terminal_router)
 
     # Remote mode: mount auth router
     if run_mode == "remote":

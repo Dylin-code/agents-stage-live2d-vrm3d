@@ -22,6 +22,9 @@
       <button class="stage-view-switch" type="button" @click="switchView">
         {{ switchButtonText }}
       </button>
+      <button class="stage-view-switch" type="button" @click="terminalVisible = !terminalVisible">
+        Terminal
+      </button>
     </div>
 
     <div class="role-settings-panel" :class="{ collapsed: roleSettingsCollapsed }">
@@ -382,6 +385,7 @@
         />
       </div>
     </div>
+    <WebTerminal v-model:visible="terminalVisible" />
   </div>
 </template>
 
@@ -393,6 +397,7 @@ import { message, Modal } from 'ant-design-vue'
 import ChatPage from '../chat.vue'
 import PersonaEditorPanel from './PersonaEditorPanel.vue'
 import SessionDirectoryBrowserModal from './SessionDirectoryBrowserModal.vue'
+import WebTerminal from '../web-terminal/WebTerminal.vue'
 import { useSessionStage, type SessionStageRenderer } from '../../pages/session-stage/useSessionStage'
 import type { CharacterPersona } from '../../types/message'
 import type { SessionSnapshotItem } from '../../types/sessionState'
@@ -450,6 +455,7 @@ const frontendConfigFileInput = ref<HTMLInputElement | null>(null)
 const personaEditorVisible = ref(false)
 const personaEditorDrafts = ref<CharacterPersona[]>([])
 const directoryBrowserVisible = ref(false)
+const terminalVisible = ref(false)
 
 const vrmGlobalGroundOffsetLabel = computed(() => `${(vrmGlobalGroundOffset.value * 100).toFixed(1)} cm`)
 const vrmActorScaleLabel = computed(() => `${Math.round(vrmActorScale.value * 100)}%`)

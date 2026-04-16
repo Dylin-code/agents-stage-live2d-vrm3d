@@ -9,7 +9,33 @@
 
 目前專案重心是 `Codex Session` 與 `Claude Code` 這類本地 agent CLI 的視覺化調度與舞台化呈現。
 
-## 最新補充
+## 重要更新：Web Terminal（2026-04-16）
+
+新增 Web Terminal 功能，可直接在前端網頁上開啟一個懸浮、可拖曳、可縮放的終端機視窗，透過 WebSocket 連線到後端主機的 shell。
+
+### 功能說明
+
+- 前端使用 `xterm.js` 渲染終端畫面，後端透過 PTY 建立真實 shell session
+- 終端視窗懸浮於所有 UI 元件之上，可自由拖曳與縮放
+- 支援重新連線（建立新 shell session）與隱藏後保持連線
+- 跨平台支援：
+  - **macOS / Linux**：使用 Python 標準庫 `pty.fork()` + `select`
+  - **Windows**：使用 `pywinpty`（需額外安裝：`uv add pywinpty`）
+
+### API 端點
+
+- `WS /api/terminal/ws?cols=80&rows=24`
+
+### 安全警語
+
+> **此功能等同於將後端主機的完整 shell 暴露至瀏覽器。**
+>
+> - **Local 模式**：僅限本機存取，風險較低，但仍請注意不要在公開網路上啟動未受保護的 local 模式。
+> - **Remote 模式**：WebSocket 連線受現有 JWT 認證保護，僅已登入且在 email 白名單內的使用者可存取。但本質上仍是遠端 shell，請務必確保 HTTPS 傳輸加密、嚴格控管白名單，並避免在不受信任的網路環境下使用。
+> - 本功能不提供指令過濾或權限隔離機制，連線使用者擁有與後端執行身分相同的 shell 權限。
+> - 如不需要此功能，可在前端移除 Terminal 按鈕或不註冊後端 `terminal_router` 即可停用。
+
+## 補充（2026-03-24）
 
 - 已新增 session / 對話層級的「角色個性」功能，可在建立 session 或續聊時切換 persona
 - 2D / 3D 舞台左上角齒輪已加入角色個性 CRUD 編輯
@@ -241,6 +267,7 @@ npm run dev
 - `GET /api/session-bridge/agent/brands`
 - `GET /api/session-bridge/fs/directories`
 - `WS /api/session-bridge/ws`
+- `WS /api/terminal/ws` — Web Terminal（見重要更新章節）
 
 如果你要把這個專案接到其他前端或自動化流程，優先從這組 API 開始整合。
 
