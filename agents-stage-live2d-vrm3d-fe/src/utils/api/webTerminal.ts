@@ -1,6 +1,7 @@
 import { getDefaultServerUrl } from '../serverUrl'
 
-const WS_PATH = '/api/terminal/ws'
+const API_PREFIX = '/api/terminal'
+const WS_PATH = `${API_PREFIX}/ws`
 
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, '')
@@ -25,4 +26,18 @@ export function resolveTerminalWsUrl(cols: number, rows: number, serverUrl?: str
 
   const wsProtocol = protocol === 'https:' ? 'wss:' : 'ws:'
   return `${wsProtocol}//${host}${WS_PATH}?cols=${cols}&rows=${rows}`
+}
+
+export interface TerminalConfig {
+  enabled: boolean
+  max_sessions: number
+  active_sessions: number
+}
+
+export async function fetchTerminalConfig(): Promise<TerminalConfig> {
+  const base = getDefaultServerUrl()
+  const url = `${base}${API_PREFIX}/config`
+  const res = await fetch(url)
+  if (!res.ok) throw new Error(`Failed to fetch terminal config: ${res.status}`)
+  return res.json()
 }
