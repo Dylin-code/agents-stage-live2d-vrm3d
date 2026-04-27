@@ -77,7 +77,18 @@
 - 處理 approval / sandbox 相關互動
 - 以 Live2D 角色方式展示 session
 
-### 3. 3D Session Stage
+### 3. mac Desktop Widget（dev）
+
+`/desktop-widget` 是 Electron mac 桌面監看小工具使用的精簡前端入口。它重用現有 Live2D 與 `session-bridge` API / WebSocket，只顯示最新活躍 session 的狀態，不載入完整控制台、側欄、聊天視窗或 terminal。
+
+v1 限制：
+
+- 只監看 session 狀態，不建立 session、不聊天、不處理 approval
+- 不自動啟動 Python 後端，需先用既有方式啟動 backend
+- 目前只提供 dev 啟動流程，不包含 dmg、簽章、公證、自動更新
+- 後端連不上時會顯示 `Bridge Disconnected` 並保留最後可顯示的 session
+
+### 4. 3D Session Stage
 
 `/session-stage-3d` 提供完整的 3D VRM 舞台執行環境，不只是把 2D 角色換成 3D 模型，而是一套更完整的場景 runtime：
 
@@ -113,6 +124,7 @@
 - `/`：Session Stage（預設首頁）
 - `/session-stage`：相容舊入口
 - `/session-stage-3d`：3D VRM 舞台
+- `/desktop-widget`：Electron 桌面監看小工具前端入口
 
 ### Backend
 
@@ -186,6 +198,8 @@ VITE_FRONTEND_PORT=5173
 make dev
 ```
 
+在 macOS 上，`make dev` 會在前後端就緒後自動啟動桌面 widget（Electron，`/desktop-widget`）。
+
 預設服務位址：
 
 - Frontend: 依 `.env` 的 `VITE_FRONTEND_PORT`，預設為 `http://127.0.0.1:5173`
@@ -204,6 +218,30 @@ npm run dev
 ```
 
 `main.py`、Vite dev server、前端預設 API / WebSocket URL 都會從根目錄 `.env` 自動讀取設定。
+
+### mac Desktop Widget dev 啟動
+
+先啟動 backend 與 frontend dev server：
+
+```bash
+# terminal 1
+cd agents-stage-live2d-vrm3d-server
+.venv/bin/python main.py
+
+# terminal 2
+cd agents-stage-live2d-vrm3d-fe
+npm run dev
+```
+
+再啟動 Electron 桌面小工具：
+
+```bash
+# terminal 3
+cd agents-stage-live2d-vrm3d-fe
+npm run electron:dev
+```
+
+Electron 預設載入 `http://127.0.0.1:5173/desktop-widget`，視窗為透明、無框、置頂，主要區域可拖曳；hover 視窗右上角會顯示關閉與重新載入控制。若要改載入位置，可設定 `DESKTOP_WIDGET_URL`。
 
 ## 使用方式
 
