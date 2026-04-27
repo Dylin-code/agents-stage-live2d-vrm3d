@@ -18,6 +18,11 @@ export const routes: RouteRecordRaw[] = [
     component: () => import('../pages/SessionStage3D.vue')
   },
   {
+    path: '/desktop-widget',
+    name: 'DesktopWidget',
+    component: () => import('../pages/DesktopWidget.vue')
+  },
+  {
     path: '/login',
     name: 'Login',
     component: () => import('../pages/Login.vue')

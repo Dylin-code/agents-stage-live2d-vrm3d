@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:widget": "vite --host 127.0.0.1",
+    "electron:dev": "electron electron/main.js",
     "build": "vite build && node scripts/copy-assets.js",
     "preview": "vite preview",
     "test:unit": "vitest run"
@@ -36,6 +38,7 @@
     "@vitejs/plugin-vue": "^4.2.3",
     "@vue/runtime-core": "^3.3.4",
     "@vue/tsconfig": "^0.4.0",
+    "electron": "^30.5.1",
     "jsdom": "^24.1.1",
     "typescript": "~5.0.4",
     "vite": "^4.3.9",

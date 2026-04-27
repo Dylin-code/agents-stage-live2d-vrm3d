@@ -17,6 +17,11 @@ describe('router routes', () => {
     expect(stage3d?.name).toBe('SessionStage3D')
   })
 
+  it('registers desktop widget route', () => {
+    const widget = routes.find((item) => item.path === '/desktop-widget')
+    expect(widget?.name).toBe('DesktopWidget')
+  })
+
   it('removes deprecated routes', () => {
     expect(routes.some((item) => item.path === '/chat')).toBe(false)
     expect(routes.some((item) => item.path === '/medieval-village')).toBe(false)

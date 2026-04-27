@@ -21,6 +21,10 @@ dev:
 	@trap 'kill 0' INT TERM EXIT; \
 	( cd agents-stage-live2d-vrm3d-server && PYTHONUNBUFFERED=1 $(VENV_PYTHON) main.py --host $(VITE_BACKEND_HOST) --port $(VITE_BACKEND_PORT) 2>&1 ) & \
 	( cd agents-stage-live2d-vrm3d-fe && npm run dev ) & \
+	( if [ "$$(uname)" = "Darwin" ]; then \
+		while ! curl -sS "http://127.0.0.1:$(VITE_FRONTEND_PORT)/desktop-widget" >/dev/null 2>&1; do sleep 1; done; \
+		cd agents-stage-live2d-vrm3d-fe && DESKTOP_WIDGET_URL="http://127.0.0.1:$(VITE_FRONTEND_PORT)/desktop-widget" npm run electron:dev; \
+	  fi ) & \
 	wait
 
 dev-remote:
