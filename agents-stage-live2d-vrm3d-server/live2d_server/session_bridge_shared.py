@@ -18,6 +18,8 @@ UUID_PATTERN = re.compile(
 )
 WHITESPACE_PATTERN = re.compile(r"\s+")
 PERMISSION_MODE_DEFAULT = "default"
+PERMISSION_MODE_AUTO = "auto"
+PERMISSION_MODE_PLAN = "plan"
 PERMISSION_MODE_FULL = "full"
 DEFAULT_APPROVAL_POLICY = "on-request"
 DEFAULT_SANDBOX_MODE = "workspace-write"
@@ -36,12 +38,14 @@ _BACKEND_DIR_NAMES = ("agents-stage-live2d-vrm3d-server", "live2d-assistant-serv
 
 # Known Claude model context windows (tokens).
 _CLAUDE_MODEL_CONTEXT_WINDOWS: dict[str, int] = {
-    "sonnet": 200_000,
-    "opus": 200_000,
+    "sonnet": 1_000_000,
+    "opus": 1_000_000,
     "haiku": 200_000,
-    "claude-sonnet-4-6": 200_000,
-    "claude-opus-4-6": 200_000,
+    "claude-opus-4-7": 1_000_000,
+    "claude-sonnet-4-6": 1_000_000,
+    "claude-opus-4-6": 1_000_000,
     "claude-haiku-4-5-20251001": 200_000,
+    "claude-haiku-4-5": 200_000,
     "claude-3-5-sonnet": 200_000,
     "claude-3-5-haiku": 200_000,
     "claude-3-opus": 200_000,
@@ -93,9 +97,11 @@ def _claude_model_context_window(model: str) -> int:
     for key, window in _CLAUDE_MODEL_CONTEXT_WINDOWS.items():
         if key in normalized or normalized in key:
             return window
-    # All current Claude models have 200k context.
-    if "claude" in normalized or normalized in ("sonnet", "opus", "haiku"):
+    # Most current Claude models have 1M context; Haiku has 200K.
+    if normalized in ("haiku",) or "haiku" in normalized:
         return 200_000
+    if "claude" in normalized or normalized in ("sonnet", "opus"):
+        return 1_000_000
     return 0
 
 
@@ -300,6 +306,10 @@ def _normalize_permission_mode(value: Optional[str]) -> str:
         "dangerously-bypass-approvals-and-sandbox",
     }:
         return PERMISSION_MODE_FULL
+    if normalized in {"auto", "auto-mode"}:
+        return PERMISSION_MODE_AUTO
+    if normalized in {"plan", "plan-mode"}:
+        return PERMISSION_MODE_PLAN
     return PERMISSION_MODE_DEFAULT
 
 

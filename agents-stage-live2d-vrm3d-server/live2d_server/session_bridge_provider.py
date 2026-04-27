@@ -36,7 +36,7 @@ _BRAND_METADATA: dict[str, AgentBrandMetadata] = {
         brand=AGENT_BRAND_CLAUDE,
         display_name="Claude",
         badge_icon="/brand/claude-badge.svg",
-        models=("claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5-20251001", "sonnet", "opus", "haiku"),
+        models=("claude-opus-4-7", "claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5-20251001", "sonnet", "opus", "haiku"),
         session_dir_env="CLAUDE_SESSION_DIR",
         session_dir_default="~/.claude/projects",
     ),

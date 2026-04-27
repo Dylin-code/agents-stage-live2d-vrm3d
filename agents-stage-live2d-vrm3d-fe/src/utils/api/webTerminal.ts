@@ -32,6 +32,7 @@ export interface TerminalConfig {
   enabled: boolean
   max_sessions: number
   active_sessions: number
+  is_windows: boolean
 }
 
 export async function fetchTerminalConfig(): Promise<TerminalConfig> {

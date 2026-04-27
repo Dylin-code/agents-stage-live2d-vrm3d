@@ -418,6 +418,7 @@ async def _bridge_chat_with_service(
                 model_context_window=runtime_model_context_window,
                 agent_brand=brand,
             )
+            await bridge_service.mark_session_idle(request.session_id)
             final_ctx: dict[str, Any] = {
                 "cwd": runtime_cwd,
                 "model": runtime_model,

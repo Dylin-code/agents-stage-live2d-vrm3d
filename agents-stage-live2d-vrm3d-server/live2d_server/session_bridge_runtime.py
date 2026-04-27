@@ -96,6 +96,8 @@ def _classify_claude_assistant_message(message: dict[str, Any]) -> tuple[str, st
         return "RESPONDING", "assistant_message"
 
     if has_thinking:
+        if stop_reason in {"end_turn", "stop_sequence"}:
+            return "IDLE", "assistant_message"
         return "THINKING", "agent_reasoning"
 
     if stop_reason in {"end_turn", "stop_sequence"}:
@@ -530,6 +532,32 @@ class SessionBridgeService:
             event = self._build_state_event(session)
         # Broadcast outside the lock so subscribers see the update.
         await self._broadcast(event)
+
+    async def mark_session_idle(self, session_id: str) -> None:
+        """Explicitly transition a session to IDLE and broadcast the state change.
+
+        Called by the API layer after stream_prompt completes to avoid relying
+        on the JSONL scanner (whose events may be skipped due to timestamp
+        races with upsert_runtime_context).
+        """
+        session_key = (session_id or "").strip()
+        if not session_key:
+            return
+        event: dict[str, Any] | None = None
+        async with self._sessions_lock:
+            session = self._sessions.get(session_key)
+            if session is None:
+                return
+            if session.state != "IDLE":
+                session.state = "IDLE"
+                session.last_state_change_mono = time.monotonic()
+                session.pending_state = None
+                session.pending_due_mono = 0.0
+            session.last_event_type = "task_complete"
+            session.active = True
+            event = self._build_state_event(session)
+        if event:
+            await self._broadcast(event)
 
     async def try_refresh_session_branch(self, session_id: str, cwd: str) -> str:
         cwd_value = str(cwd or "").strip()
@@ -1196,6 +1224,32 @@ class SessionBridgeService:
             except (OSError, ValueError) as exc:
                 logger.warning("Claude session bridge read failed: %s (%s)", path, exc)
 
+        await self._idle_stale_claude_sessions()
+
+    async def _idle_stale_claude_sessions(self) -> None:
+        """Force IDLE for Claude sessions stuck in a non-IDLE state with no recent events."""
+        now_epoch = time.time()
+        stale_threshold = 30.0
+        emitted: list[dict[str, Any]] = []
+        async with self._sessions_lock:
+            for session in self._sessions.values():
+                if session.agent_brand != "claude":
+                    continue
+                if session.state == "IDLE":
+                    continue
+                if not session.active:
+                    continue
+                age = now_epoch - session.last_seen_epoch
+                if age >= stale_threshold:
+                    session.state = "IDLE"
+                    session.last_state_change_mono = time.monotonic()
+                    session.pending_state = None
+                    session.pending_due_mono = 0.0
+                    session.last_event_type = "task_complete"
+                    emitted.append(self._build_state_event(session))
+        for event in emitted:
+            await self._broadcast(event)
+
     async def _consume_claude_file(self, path: Path) -> None:
         """Read incremental lines from a Claude session JSONL file."""
         key = str(path)
@@ -1270,11 +1324,7 @@ class SessionBridgeService:
                 session.agent_brand = "claude"
                 self._sessions[session_id] = session
                 logger.info("Claude session online (disk): %s", session_id)
-            elif event_epoch < (session.last_seen_epoch - 1e-6):
-                return
 
-            # Only update disk-sourced sessions, don't overwrite active in-memory ones
-            # that may have more recent data.
             if cwd:
                 session.cwd = cwd
                 session.cwd_basename = _basename_from_cwd(cwd)

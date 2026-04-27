@@ -301,9 +301,13 @@
             <option value="low">low</option>
             <option value="medium">medium</option>
             <option value="high">high</option>
+            <option value="xhigh">xhigh</option>
+            <option value="max">max (Opus)</option>
           </select>
           <select v-model="newSessionForm.permission_mode">
             <option value="default">執行模式: 預設 (工作區可寫 / Codex full-auto)</option>
+            <option value="auto">執行模式: Auto (自動審批安全操作)</option>
+            <option value="plan">執行模式: Plan (僅規劃不執行)</option>
             <option value="full">執行模式: 完整存取權 (跳過 sandbox)</option>
           </select>
         </div>
@@ -387,6 +391,7 @@
           :onUserMessageSent="notifyUserMessageSent"
           :transparentMode="isPortraitMode"
           :defaultAgentSettingsExpanded="!isPortraitMode"
+          :onClose="isPortraitMode ? closeSessionChat : undefined"
         />
       </div>
     </div>
@@ -394,6 +399,7 @@
       v-for="inst in terminalInstances"
       :key="inst.id"
       :instance-index="inst.index"
+      :is-windows="terminalIsWindows"
       @close="closeTerminal(inst.id)"
     />
   </div>
@@ -468,6 +474,7 @@ const personaEditorDrafts = ref<CharacterPersona[]>([])
 const directoryBrowserVisible = ref(false)
 const terminalEnabled = ref(false)
 const terminalMaxSessions = ref(2)
+const terminalIsWindows = ref(false)
 const terminalInstances = ref<{ id: number; index: number }[]>([])
 let terminalNextId = 0
 let terminalNextIndex = 0
@@ -797,6 +804,7 @@ onMounted(async () => {
     .then((cfg) => {
       terminalEnabled.value = cfg.enabled
       terminalMaxSessions.value = cfg.max_sessions
+      terminalIsWindows.value = cfg.is_windows
     })
     .catch(() => { terminalEnabled.value = false })
 
@@ -1658,15 +1666,15 @@ canvas {
     max-height: none;
     min-height: 0;
     border-radius: 0;
-    padding: 0 0 calc(10px + var(--app-safe-area-bottom, 0px));
+    padding: 0;
   }
 
   .chat-dock.portrait-transparent .chat-dock-header {
-    background: rgba(9, 23, 41, 0.45);
-    backdrop-filter: blur(8px);
-    border-radius: 12px;
-    margin: 0 8px;
-    border-bottom: none;
+    display: none;
+  }
+
+  .chat-dock.portrait-transparent {
+    top: calc(44px + var(--app-safe-area-top, 0px));
   }
 
   .chat-dock.portrait-transparent .chat-dock-body {

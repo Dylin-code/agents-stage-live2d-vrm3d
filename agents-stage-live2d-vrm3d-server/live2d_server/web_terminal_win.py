@@ -13,12 +13,88 @@ _POLL_INTERVAL = 0.05
 
 
 def _default_shell() -> str:
-    """Return PowerShell if available, otherwise cmd.exe."""
+    """Prefer PowerShell 7 (pwsh); fall back to Windows PowerShell 5.1, then cmd."""
+    candidates = [
+        r"C:\Program Files\PowerShell\7\pwsh.exe",
+        r"C:\Program Files\PowerShell\7-preview\pwsh.exe",
+        os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\PowerShell\7\pwsh.exe"),
+        os.path.expandvars(r"%ProgramFiles%\PowerShell\7\pwsh.exe"),
+    ]
+    for path in candidates:
+        if path and os.path.isfile(path):
+            return path
     ps = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
                       "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
     if os.path.isfile(ps):
         return ps
     return os.environ.get("COMSPEC", "cmd.exe")
+
+
+def _refresh_env_from_registry() -> dict[str, str]:
+    """Merge latest Machine + User environment (esp. PATH) from registry into a copy of os.environ.
+
+    Windows processes snapshot env at launch; installers that update PATH via registry
+    don't propagate into already-running processes. Re-reading ensures the PTY child
+    sees tools installed after this server started.
+    """
+    env = dict(os.environ)
+    if os.name != "nt":
+        return env
+    try:
+        import winreg  # type: ignore[import-not-found]
+    except ImportError:
+        return env
+
+    def _read(root: int, subkey: str) -> dict[str, str]:
+        out: dict[str, str] = {}
+        try:
+            with winreg.OpenKey(root, subkey) as key:
+                i = 0
+                while True:
+                    try:
+                        name, value, _ = winreg.EnumValue(key, i)
+                    except OSError:
+                        break
+                    if isinstance(value, str):
+                        out[name] = value
+                    i += 1
+        except OSError:
+            pass
+        return out
+
+    machine = _read(winreg.HKEY_LOCAL_MACHINE,
+                    r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment")
+    user = _read(winreg.HKEY_CURRENT_USER, r"Environment")
+
+    # Merge: user overrides machine, except PATH which concatenates (Windows behavior).
+    merged: dict[str, str] = {**machine}
+    for k, v in user.items():
+        if k.upper() == "PATH":
+            machine_path = machine.get("Path") or machine.get("PATH", "")
+            merged_path = ";".join(p for p in (machine_path, v) if p)
+            merged["Path"] = os.path.expandvars(merged_path)
+        else:
+            merged[k] = os.path.expandvars(v)
+
+    # Expand any %VAR% references in machine-only keys too.
+    for k, v in list(merged.items()):
+        if "%" in v:
+            merged[k] = os.path.expandvars(v)
+
+    # Overlay onto current env (preserves process-local vars like VIRTUAL_ENV),
+    # but force-refresh PATH from registry.
+    for k, v in merged.items():
+        if k.upper() == "PATH":
+            env["PATH"] = v
+            env["Path"] = v
+        else:
+            env.setdefault(k, v)
+    return env
+
+
+def _env_to_winpty_block(env: dict[str, str]) -> str:
+    """pywinpty expects env as a single string of KEY=VALUE pairs joined by \\0, terminated by \\0."""
+    return "\0".join(f"{k}={v}" for k, v in env.items()) + "\0"
 
 
 class WinPtySession:
@@ -40,8 +116,13 @@ class WinPtySession:
             ) from exc
 
         shell = _default_shell()
+        env = _refresh_env_from_registry()
         proc = PTY(self._cols, self._rows)
-        proc.spawn(shell)
+        try:
+            proc.spawn(shell, env=_env_to_winpty_block(env))
+        except TypeError:
+            # Older pywinpty without env kwarg — fall back silently.
+            proc.spawn(shell)
         self._process = proc
         self._reader_task = asyncio.create_task(self._read_loop())
         logger.info("Windows PTY started: shell=%s, cols=%d, rows=%d", shell, self._cols, self._rows)
