@@ -38,21 +38,65 @@ import { resolveTerminalWsUrl } from '../../utils/api/webTerminal'
 import { themeNames, getTheme, loadThemeName, saveThemeName } from './terminalThemes'
 
 const POSITION_OFFSET = 30
+const MOBILE_BREAKPOINT = 640
+const DEFAULT_WIDTH = 720
+const DEFAULT_HEIGHT = 440
+const MIN_WIDTH = 280
+const MIN_HEIGHT = 200
+const EDGE_PADDING = 8
 
-const props = defineProps<{ instanceIndex: number }>()
+const props = defineProps<{ instanceIndex: number; isWindows?: boolean }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
 
 const containerRef = ref<HTMLDivElement>()
 const terminalRef = ref<HTMLDivElement>()
 
-// Position & size — each instance is offset so windows don't stack exactly
-const posX = ref(80 + (props.instanceIndex - 1) * POSITION_OFFSET)
-const posY = ref(80 + (props.instanceIndex - 1) * POSITION_OFFSET)
-const width = ref(720)
-const height = ref(440)
+function getViewport() {
+  return {
+    w: window.innerWidth,
+    h: window.innerHeight,
+  }
+}
 
-const MIN_WIDTH = 360
-const MIN_HEIGHT = 240
+function computeInitialLayout(index: number) {
+  const { w, h } = getViewport()
+  const isMobile = w < MOBILE_BREAKPOINT
+  if (isMobile) {
+    return {
+      width: Math.max(MIN_WIDTH, w - EDGE_PADDING * 2),
+      height: Math.max(MIN_HEIGHT, Math.min(h - EDGE_PADDING * 2, Math.round(h * 0.7))),
+      x: EDGE_PADDING,
+      y: EDGE_PADDING,
+    }
+  }
+  const targetW = Math.min(DEFAULT_WIDTH, w - EDGE_PADDING * 2)
+  const targetH = Math.min(DEFAULT_HEIGHT, h - EDGE_PADDING * 2)
+  const offset = (index - 1) * POSITION_OFFSET
+  const maxX = Math.max(EDGE_PADDING, w - targetW - EDGE_PADDING)
+  const maxY = Math.max(EDGE_PADDING, h - targetH - EDGE_PADDING)
+  return {
+    width: targetW,
+    height: targetH,
+    x: Math.min(80 + offset, maxX),
+    y: Math.min(80 + offset, maxY),
+  }
+}
+
+const initial = computeInitialLayout(props.instanceIndex)
+const posX = ref(initial.x)
+const posY = ref(initial.y)
+const width = ref(initial.width)
+const height = ref(initial.height)
+
+function clampToViewport() {
+  const { w, h } = getViewport()
+  const maxW = Math.max(MIN_WIDTH, w - EDGE_PADDING * 2)
+  const maxH = Math.max(MIN_HEIGHT, h - EDGE_PADDING * 2)
+  width.value = Math.min(width.value, maxW)
+  height.value = Math.min(height.value, maxH)
+  posX.value = Math.max(0, Math.min(posX.value, w - width.value))
+  posY.value = Math.max(0, Math.min(posY.value, h - height.value))
+}
 
 const containerStyle = computed(() => ({
   left: `${posX.value}px`,
@@ -90,12 +134,16 @@ function createTerminal() {
 
   const theme = getTheme(currentThemeName.value)
 
-  terminal = new Terminal({
+  const opts: Record<string, unknown> = {
     cursorBlink: true,
     fontSize: 14,
     fontFamily: '"Cascadia Code", Menlo, Monaco, "Courier New", monospace',
     theme,
-  })
+  }
+  if (props.isWindows) {
+    opts.windowsPty = { backend: 'conpty', buildNumber: 21376 }
+  }
+  terminal = new Terminal(opts)
 
   fitAddon = new FitAddon()
   terminal.loadAddon(fitAddon)
@@ -125,6 +173,13 @@ function connectWs() {
 
   ws.onopen = () => {
     terminal?.writeln('\x1b[32mTerminal connected.\x1b[0m')
+    // Refit after browser completes layout, then force-sync size to PTY
+    requestAnimationFrame(() => {
+      fitTerminal()
+      if (terminal && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }))
+      }
+    })
   }
 
   ws.onmessage = (event) => {
@@ -186,8 +241,11 @@ function onDragStart(e: PointerEvent) {
 }
 
 function onDragMove(e: PointerEvent) {
-  posX.value = Math.max(0, e.clientX - dragOffset.x)
-  posY.value = Math.max(0, e.clientY - dragOffset.y)
+  const { w, h } = getViewport()
+  const maxX = Math.max(0, w - width.value)
+  const maxY = Math.max(0, h - height.value)
+  posX.value = Math.max(0, Math.min(e.clientX - dragOffset.x, maxX))
+  posY.value = Math.max(0, Math.min(e.clientY - dragOffset.y, maxY))
 }
 
 function onDragEnd() {
@@ -209,8 +267,11 @@ function onResizeStart(e: PointerEvent) {
 }
 
 function onResizeMove(e: PointerEvent) {
-  width.value = Math.max(MIN_WIDTH, resizeStart.w + (e.clientX - resizeStart.x))
-  height.value = Math.max(MIN_HEIGHT, resizeStart.h + (e.clientY - resizeStart.y))
+  const { w, h } = getViewport()
+  const maxW = Math.max(MIN_WIDTH, w - posX.value - EDGE_PADDING)
+  const maxH = Math.max(MIN_HEIGHT, h - posY.value - EDGE_PADDING)
+  width.value = Math.min(maxW, Math.max(MIN_WIDTH, resizeStart.w + (e.clientX - resizeStart.x)))
+  height.value = Math.min(maxH, Math.max(MIN_HEIGHT, resizeStart.h + (e.clientY - resizeStart.y)))
 }
 
 function onResizeEnd() {
@@ -222,6 +283,11 @@ function onResizeEnd() {
 // ------------------------------------------------------------------
 // Lifecycle
 // ------------------------------------------------------------------
+function onWindowResize() {
+  clampToViewport()
+  fitTerminal()
+}
+
 onMounted(async () => {
   await nextTick()
   createTerminal()
@@ -232,10 +298,14 @@ onMounted(async () => {
   if (terminalRef.value) {
     resizeObserver.observe(terminalRef.value)
   }
+  window.addEventListener('resize', onWindowResize)
+  window.addEventListener('orientationchange', onWindowResize)
 })
 
 onBeforeUnmount(() => {
   resizeObserver?.disconnect()
+  window.removeEventListener('resize', onWindowResize)
+  window.removeEventListener('orientationchange', onWindowResize)
   disconnectWs()
   terminal?.dispose()
   terminal = null
@@ -253,6 +323,9 @@ onBeforeUnmount(() => {
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
   border: 1px solid #45475a;
   background: #1e1e2e;
+  max-width: 100vw;
+  max-height: 100vh;
+  box-sizing: border-box;
 }
 
 .web-terminal-header {
@@ -265,6 +338,8 @@ onBeforeUnmount(() => {
   cursor: grab;
   user-select: none;
   flex-shrink: 0;
+  touch-action: none;
+  gap: 6px;
 }
 
 .web-terminal-header:active {
@@ -276,12 +351,18 @@ onBeforeUnmount(() => {
   font-weight: 600;
   color: #cdd6f4;
   letter-spacing: 0.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 1;
+  min-width: 0;
 }
 
 .web-terminal-header-actions {
   display: flex;
   gap: 4px;
   align-items: center;
+  flex-shrink: 0;
 }
 
 .web-terminal-theme-select {
@@ -323,7 +404,6 @@ onBeforeUnmount(() => {
 
 .web-terminal-body {
   flex: 1;
-  padding: 4px;
   overflow: hidden;
 }
 
@@ -331,19 +411,35 @@ onBeforeUnmount(() => {
   position: absolute;
   right: 0;
   bottom: 0;
-  width: 16px;
-  height: 16px;
+  width: 28px;
+  height: 28px;
   cursor: nwse-resize;
+  touch-action: none;
+  z-index: 2;
 }
 
 .web-terminal-resize-handle::after {
   content: '';
   position: absolute;
-  right: 3px;
-  bottom: 3px;
-  width: 8px;
-  height: 8px;
+  right: 5px;
+  bottom: 5px;
+  width: 12px;
+  height: 12px;
   border-right: 2px solid #585b70;
   border-bottom: 2px solid #585b70;
+}
+
+@media (max-width: 640px) {
+  .web-terminal-title {
+    font-size: 11px;
+  }
+  .web-terminal-theme-select {
+    max-width: 90px;
+    font-size: 10px;
+  }
+  .web-terminal-resize-handle {
+    width: 36px;
+    height: 36px;
+  }
 }
 </style>

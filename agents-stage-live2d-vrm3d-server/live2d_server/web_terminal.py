@@ -79,6 +79,7 @@ async def terminal_config() -> dict[str, Any]:
         "enabled": _is_enabled(),
         "max_sessions": _max_sessions(),
         "active_sessions": current,
+        "is_windows": _IS_WINDOWS,
     }
 
 

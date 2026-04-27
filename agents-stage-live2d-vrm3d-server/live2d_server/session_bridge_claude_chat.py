@@ -13,8 +13,10 @@ from pathlib import Path
 from typing import Any, AsyncGenerator, Optional
 
 from .session_bridge_shared import (
+    PERMISSION_MODE_AUTO,
     PERMISSION_MODE_DEFAULT,
     PERMISSION_MODE_FULL,
+    PERMISSION_MODE_PLAN,
     _build_session_bridge_prompt,
     _claude_model_context_window,
     _ensure_stream_reader_limit,
@@ -120,9 +122,11 @@ class ClaudeSessionChatService:
         )
         if effective_mode == PERMISSION_MODE_FULL:
             cmd.append("--dangerously-skip-permissions")
+        elif effective_mode == PERMISSION_MODE_AUTO:
+            cmd.extend(["--permission-mode", "auto"])
+        elif effective_mode == PERMISSION_MODE_PLAN:
+            cmd.extend(["--permission-mode", "plan"])
         else:
-            # Use bypassPermissions so CLI executes all tools automatically;
-            # the bridge layer intercepts tool_call events and handles approval.
             cmd.extend(["--permission-mode", "bypassPermissions"])
 
     # ------------------------------------------------------------------
@@ -394,7 +398,9 @@ class ClaudeSessionChatService:
             approval_policy=approval_policy,
             sandbox_mode=sandbox_mode,
         )
-        require_bridge_approval = effective_permission_mode != PERMISSION_MODE_FULL
+        require_bridge_approval = effective_permission_mode not in {
+            PERMISSION_MODE_FULL, PERMISSION_MODE_AUTO,
+        }
 
         prompt_for_exec = _build_session_bridge_prompt(
             prompt_value,

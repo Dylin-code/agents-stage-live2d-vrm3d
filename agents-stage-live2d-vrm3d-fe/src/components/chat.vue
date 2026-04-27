@@ -1,5 +1,12 @@
 <template>
   <div class="chat-container" :class="{ 'chat-container--danger': isFullAccess, 'transparent-mode': props.transparentMode }">
+    <button
+      v-if="props.transparentMode && props.onClose"
+      class="chat-header-close-floating"
+      type="button"
+      aria-label="關閉"
+      @click="props.onClose?.()"
+    >×</button>
     <div class="chat-header">
       <div class="chat-header-title">
         <span v-if="!isEditing">{{ localConversation.label }}</span>
@@ -34,11 +41,15 @@
             <option value="low">low</option>
             <option value="medium">medium</option>
             <option value="high">high</option>
+            <option value="xhigh">xhigh</option>
+            <option value="max">max (Opus)</option>
           </select>
 
           <label>執行模式</label>
           <select v-model="agentOptions.permission_mode" @change="emitAgentOptions">
             <option value="default">預設 (工作區可寫 / Codex full-auto)</option>
+            <option value="auto">Auto (自動審批安全操作)</option>
+            <option value="plan">Plan (僅規劃不執行)</option>
             <option value="full">完整存取權 (跳過 sandbox)</option>
           </select>
         </div>
@@ -279,6 +290,10 @@ const props = defineProps({
   defaultAgentSettingsExpanded: {
     type: Boolean,
     default: true,
+  },
+  onClose: {
+    type: Function as PropType<() => void>,
+    required: false,
   },
 })
 
@@ -1302,6 +1317,127 @@ onUnmounted(() => {
 
 .chat-container.transparent-mode :deep(.chat-sender textarea::placeholder) {
   color: rgba(220, 235, 255, 0.5) !important;
+}
+
+/* ===== Mobile / portrait layout ===== */
+@media (max-width: 768px), (orientation: portrait) and (max-width: 920px) {
+  .chat-header {
+    height: 40px;
+    margin: 6px 8px 4px;
+    border-radius: 8px;
+  }
+
+  .chat-header-title {
+    font-size: 14px;
+  }
+
+  /* In transparent (portrait) mode, suppress chat's own header —
+     stage-header already fills that row; close button floats separately. */
+  .chat-container.transparent-mode .chat-header {
+    display: none;
+  }
+}
+
+/* Floating close button for portrait/transparent mode */
+.chat-container.transparent-mode .chat-header-close-floating {
+  position: absolute;
+  top: calc(10px + var(--app-safe-area-top, 0px));
+  right: calc(64px + var(--app-safe-area-right, 0px));
+  z-index: 16;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  border: 1px solid rgba(188, 216, 252, 0.45);
+  background: rgba(12, 39, 68, 0.86);
+  color: #ecf5ff;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(8px);
+  padding: 0;
+}
+
+.chat-container.transparent-mode .chat-header-close-floating:active {
+  background: rgba(17, 49, 82, 0.9);
+}
+
+@media (max-width: 768px), (orientation: portrait) and (max-width: 920px) {
+  .agent-settings-wrapper {
+    margin: 0 8px 4px;
+  }
+
+  .agent-settings-toggle {
+    padding: 4px 10px;
+    font-size: 11px;
+  }
+
+  .agent-session-controls {
+    margin: 0 8px 4px;
+    padding: 6px 8px;
+    display: flex;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    gap: 6px;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+  }
+
+  .agent-session-controls::-webkit-scrollbar {
+    height: 4px;
+  }
+
+  .agent-session-row {
+    display: inline-flex;
+    flex-wrap: nowrap;
+    margin-bottom: 0;
+    gap: 4px;
+    flex-shrink: 0;
+    align-items: center;
+  }
+
+  .agent-session-row label {
+    white-space: nowrap;
+    font-size: 11px;
+  }
+
+  .agent-session-row select,
+  .agent-session-row input[type='text'],
+  .agent-session-row input[type='file'] {
+    font-size: 11px;
+    padding: 3px 6px;
+    max-width: 140px;
+  }
+
+  .cwd-input {
+    min-width: 120px;
+  }
+
+  .mini-btn {
+    padding: 3px 6px;
+    font-size: 11px;
+    white-space: nowrap;
+  }
+
+  .hint {
+    display: none;
+  }
+
+  .image-chips {
+    margin: 0 8px 4px;
+  }
+
+  .messages {
+    padding: 10px 4%;
+  }
+
+  .danger-banner {
+    margin: 0 8px 4px;
+    padding: 6px 10px;
+    font-size: 11px;
+  }
 }
 
 /* Local file path links */

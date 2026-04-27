@@ -18,7 +18,7 @@ export const DEFAULT_AGENT_BRANDS: AgentBrandCatalogItem[] = [
     brand: 'claude',
     display_name: 'Claude',
     badge_icon: '/brand/claude-badge.svg',
-    models: ['claude-sonnet-4-6', 'claude-opus-4-6', 'claude-haiku-4-5-20251001', 'sonnet', 'opus', 'haiku'],
+    models: ['claude-opus-4-7', 'claude-sonnet-4-6', 'claude-opus-4-6', 'claude-haiku-4-5-20251001', 'sonnet', 'opus', 'haiku'],
     default_permission_mode: 'default',
   },
 ]
