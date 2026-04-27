@@ -85,9 +85,9 @@
 - 處理 approval / sandbox 相關互動
 - 以 Live2D 角色方式展示 session
 
-### 3. mac Desktop Widget（dev）
+### 3. Desktop Widget（mac / Windows，dev）
 
-`/desktop-widget` 是 Electron mac 桌面監看小工具使用的精簡前端入口。它重用現有 Live2D 與 `session-bridge` API / WebSocket，只顯示最新活躍 session 的狀態，不載入完整控制台、側欄、聊天視窗或 terminal。
+`/desktop-widget` 是 Electron 桌面監看小工具使用的精簡前端入口（目前支援 macOS 與 Windows）。它重用現有 Live2D 與 `session-bridge` API / WebSocket，只顯示最新活躍 session 的狀態，不載入完整控制台、側欄、聊天視窗或 terminal。
 
 v1 限制：
 
@@ -206,7 +206,7 @@ VITE_FRONTEND_PORT=5173
 make dev
 ```
 
-在 macOS 上，`make dev` 會在前後端就緒後自動啟動桌面 widget（Electron，`/desktop-widget`）。
+在 macOS 與 Windows 上，`make dev` 會在前後端就緒後自動啟動桌面 widget（Electron，`/desktop-widget`）。
 
 預設服務位址：
 
@@ -227,7 +227,7 @@ npm run dev
 
 `main.py`、Vite dev server、前端預設 API / WebSocket URL 都會從根目錄 `.env` 自動讀取設定。
 
-### mac Desktop Widget dev 啟動
+### Desktop Widget dev 啟動（手動）
 
 先啟動 backend 與 frontend dev server：
 
@@ -250,6 +250,11 @@ npm run electron:dev
 ```
 
 Electron 預設載入 `http://127.0.0.1:5173/desktop-widget`，視窗為透明、無框、置頂，主要區域可拖曳；hover 視窗右上角會顯示關閉與重新載入控制。若要改載入位置，可設定 `DESKTOP_WIDGET_URL`。
+
+平台差異：
+
+- macOS：透明、無框、置頂、顯示於所有 workspace
+- Windows：無框、置頂，預設使用非透明背景以提升穩定度
 
 ## 使用方式
 

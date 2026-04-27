@@ -10,6 +10,14 @@ VITE_BACKEND_HOST ?= 127.0.0.1
 VITE_BACKEND_PORT ?= 8000
 VITE_FRONTEND_HOST ?= 0.0.0.0
 VITE_FRONTEND_PORT ?= 5173
+HOST_UNAME := $(shell uname -s 2>/dev/null)
+WIDGET_AUTOSTART ?= false
+ifeq ($(HOST_UNAME),Darwin)
+WIDGET_AUTOSTART = true
+endif
+ifeq ($(OS),Windows_NT)
+WIDGET_AUTOSTART = true
+endif
 
 # Detect Python venv path (Windows: Scripts/python, Unix: bin/python)
 VENV_PYTHON := $(shell if [ -f agents-stage-live2d-vrm3d-server/.venv/Scripts/python.exe ]; then echo .venv/Scripts/python; else echo .venv/bin/python; fi)
@@ -21,7 +29,7 @@ dev:
 	@trap 'kill 0' INT TERM EXIT; \
 	( cd agents-stage-live2d-vrm3d-server && PYTHONUNBUFFERED=1 $(VENV_PYTHON) main.py --host $(VITE_BACKEND_HOST) --port $(VITE_BACKEND_PORT) 2>&1 ) & \
 	( cd agents-stage-live2d-vrm3d-fe && npm run dev ) & \
-	( if [ "$$(uname)" = "Darwin" ]; then \
+	( if [ "$(WIDGET_AUTOSTART)" = "true" ]; then \
 		while ! curl -sS "http://127.0.0.1:$(VITE_FRONTEND_PORT)/desktop-widget" >/dev/null 2>&1; do sleep 1; done; \
 		cd agents-stage-live2d-vrm3d-fe && DESKTOP_WIDGET_URL="http://127.0.0.1:$(VITE_FRONTEND_PORT)/desktop-widget" npm run electron:dev; \
 	  fi ) & \

@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { applyMacWidgetWindowBehavior } from './platform.js'
+import { applyPlatformWidgetWindowBehavior, buildWidgetWindowOptions } from './platform.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -15,27 +15,10 @@ function resolveWidgetUrl() {
 }
 
 function createWidgetWindow() {
-  widgetWindow = new BrowserWindow({
-    width: 360,
-    height: 520,
-    minWidth: 260,
-    minHeight: 360,
-    transparent: true,
-    frame: false,
-    resizable: true,
-    hasShadow: false,
-    alwaysOnTop: true,
-    backgroundColor: '#00000000',
-    title: 'Agents Desktop Widget',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.cjs'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
-    },
-  })
+  const preloadPath = path.join(__dirname, 'preload.cjs')
+  widgetWindow = new BrowserWindow(buildWidgetWindowOptions(preloadPath))
 
-  applyMacWidgetWindowBehavior(widgetWindow)
+  applyPlatformWidgetWindowBehavior(widgetWindow)
   widgetWindow.loadURL(resolveWidgetUrl())
   widgetWindow.on('closed', () => {
     widgetWindow = null
