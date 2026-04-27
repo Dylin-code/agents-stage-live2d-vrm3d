@@ -22,8 +22,13 @@
       <button class="stage-view-switch" type="button" @click="switchView">
         {{ switchButtonText }}
       </button>
-      <button class="stage-view-switch" type="button" @click="terminalVisible = !terminalVisible">
-        Terminal
+      <button
+        v-if="terminalEnabled"
+        class="stage-view-switch"
+        type="button"
+        @click="openNewTerminal"
+      >
+        Terminal {{ terminalInstances.length ? `(${terminalInstances.length}/${terminalMaxSessions})` : '' }}
       </button>
     </div>
 
@@ -385,7 +390,12 @@
         />
       </div>
     </div>
-    <WebTerminal v-model:visible="terminalVisible" />
+    <WebTerminal
+      v-for="inst in terminalInstances"
+      :key="inst.id"
+      :instance-index="inst.index"
+      @close="closeTerminal(inst.id)"
+    />
   </div>
 </template>
 
@@ -398,6 +408,7 @@ import ChatPage from '../chat.vue'
 import PersonaEditorPanel from './PersonaEditorPanel.vue'
 import SessionDirectoryBrowserModal from './SessionDirectoryBrowserModal.vue'
 import WebTerminal from '../web-terminal/WebTerminal.vue'
+import { fetchTerminalConfig, type TerminalConfig } from '../../utils/api/webTerminal'
 import { useSessionStage, type SessionStageRenderer } from '../../pages/session-stage/useSessionStage'
 import type { CharacterPersona } from '../../types/message'
 import type { SessionSnapshotItem } from '../../types/sessionState'
@@ -455,7 +466,25 @@ const frontendConfigFileInput = ref<HTMLInputElement | null>(null)
 const personaEditorVisible = ref(false)
 const personaEditorDrafts = ref<CharacterPersona[]>([])
 const directoryBrowserVisible = ref(false)
-const terminalVisible = ref(false)
+const terminalEnabled = ref(false)
+const terminalMaxSessions = ref(2)
+const terminalInstances = ref<{ id: number; index: number }[]>([])
+let terminalNextId = 0
+let terminalNextIndex = 0
+
+function openNewTerminal() {
+  if (terminalInstances.value.length >= terminalMaxSessions.value) {
+    message.warning(`已達終端上限 (${terminalMaxSessions.value})`)
+    return
+  }
+  terminalNextId++
+  terminalNextIndex++
+  terminalInstances.value.push({ id: terminalNextId, index: terminalNextIndex })
+}
+
+function closeTerminal(id: number) {
+  terminalInstances.value = terminalInstances.value.filter((t) => t.id !== id)
+}
 
 const vrmGlobalGroundOffsetLabel = computed(() => `${(vrmGlobalGroundOffset.value * 100).toFixed(1)} cm`)
 const vrmActorScaleLabel = computed(() => `${Math.round(vrmActorScale.value * 100)}%`)
@@ -763,6 +792,13 @@ onMounted(async () => {
   } catch (error) {
     console.error('Failed to bootstrap default frontend config', error)
   }
+
+  fetchTerminalConfig()
+    .then((cfg) => {
+      terminalEnabled.value = cfg.enabled
+      terminalMaxSessions.value = cfg.max_sessions
+    })
+    .catch(() => { terminalEnabled.value = false })
 
   vrmGlobalGroundOffset.value = loadVrmGlobalGroundOffset()
   vrmActorScale.value = loadVrmActorScale()

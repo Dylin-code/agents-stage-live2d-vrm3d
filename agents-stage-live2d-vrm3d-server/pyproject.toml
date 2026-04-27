@@ -38,6 +38,7 @@ dependencies = [
     "python-jose[cryptography]>=3.3.0",
     "fastapi-sso>=0.16.0",
     "webdriver-manager>=4.0.2",
+    "pywinpty>=3.0.3",
 ]
 
 [dependency-groups]

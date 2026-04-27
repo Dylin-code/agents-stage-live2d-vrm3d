@@ -3,12 +3,12 @@
 import asyncio
 import logging
 import os
+import signal
 
 from fastapi import WebSocket, WebSocketDisconnect
 
 logger = logging.getLogger(__name__)
 
-_READ_CHUNK = 4096
 _POLL_INTERVAL = 0.05
 
 
@@ -72,8 +72,10 @@ class WinPtySession:
                 pass
         if self._process is not None:
             try:
-                self._process.close()  # type: ignore[union-attr]
-            except Exception:
+                pid = self._process.pid  # type: ignore[union-attr]
+                if pid and self._process.isalive():  # type: ignore[union-attr]
+                    os.kill(pid, signal.SIGTERM)
+            except (OSError, ProcessLookupError):
                 pass
             self._process = None
         logger.info("Windows PTY stopped")
@@ -103,13 +105,13 @@ class WinPtySession:
             if not self._process.isalive():  # type: ignore[union-attr]
                 # Drain remaining output
                 try:
-                    remaining = self._process.read(_READ_CHUNK)  # type: ignore[union-attr]
+                    remaining = self._process.read(blocking=False)  # type: ignore[union-attr]
                     if remaining:
                         return remaining
                 except Exception:
                     pass
                 return None
-            data = self._process.read(_READ_CHUNK, blocking=False)  # type: ignore[union-attr]
+            data = self._process.read(blocking=False)  # type: ignore[union-attr]
             if not data:
                 # No data yet — small sleep to avoid busy-wait
                 import time

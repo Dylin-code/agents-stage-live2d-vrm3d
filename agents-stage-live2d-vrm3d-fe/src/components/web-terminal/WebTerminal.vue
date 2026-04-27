@@ -1,6 +1,5 @@
 <template>
   <div
-    v-show="visible"
     ref="containerRef"
     class="web-terminal-container"
     :style="containerStyle"
@@ -9,8 +8,17 @@
       class="web-terminal-header"
       @pointerdown="onDragStart"
     >
-      <span class="web-terminal-title">Terminal</span>
+      <span class="web-terminal-title">Terminal #{{ instanceIndex }}</span>
       <div class="web-terminal-header-actions">
+        <select
+          class="web-terminal-theme-select"
+          :value="currentThemeName"
+          title="切換主題"
+          @change="onThemeChange"
+          @pointerdown.stop
+        >
+          <option v-for="name in themeNames" :key="name" :value="name">{{ name }}</option>
+        </select>
         <button class="web-terminal-btn" title="重新連線" @click="reconnect">↻</button>
         <button class="web-terminal-btn" title="關閉" @click="close">✕</button>
       </div>
@@ -21,22 +29,25 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import { resolveTerminalWsUrl } from '../../utils/api/webTerminal'
+import { themeNames, getTheme, loadThemeName, saveThemeName } from './terminalThemes'
 
-const props = defineProps<{ visible: boolean }>()
-const emit = defineEmits<{ (e: 'update:visible', value: boolean): void }>()
+const POSITION_OFFSET = 30
+
+const props = defineProps<{ instanceIndex: number }>()
+const emit = defineEmits<{ (e: 'close'): void }>()
 
 const containerRef = ref<HTMLDivElement>()
 const terminalRef = ref<HTMLDivElement>()
 
-// Position & size
-const posX = ref(80)
-const posY = ref(80)
+// Position & size — each instance is offset so windows don't stack exactly
+const posX = ref(80 + (props.instanceIndex - 1) * POSITION_OFFSET)
+const posY = ref(80 + (props.instanceIndex - 1) * POSITION_OFFSET)
 const width = ref(720)
 const height = ref(440)
 
@@ -50,40 +61,40 @@ const containerStyle = computed(() => ({
   height: `${height.value}px`,
 }))
 
+const currentThemeName = ref(loadThemeName())
+
 let terminal: Terminal | null = null
 let fitAddon: FitAddon | null = null
 let ws: WebSocket | null = null
 let resizeObserver: ResizeObserver | null = null
 
+function applyTheme(name: string) {
+  const theme = getTheme(name)
+  currentThemeName.value = name
+  saveThemeName(name)
+  if (terminal) {
+    terminal.options.theme = theme
+  }
+  if (containerRef.value) {
+    containerRef.value.style.background = theme.background ?? '#1e1e2e'
+  }
+}
+
+function onThemeChange(e: Event) {
+  const name = (e.target as HTMLSelectElement).value
+  applyTheme(name)
+}
+
 function createTerminal() {
   if (!terminalRef.value) return
+
+  const theme = getTheme(currentThemeName.value)
 
   terminal = new Terminal({
     cursorBlink: true,
     fontSize: 14,
     fontFamily: '"Cascadia Code", Menlo, Monaco, "Courier New", monospace',
-    theme: {
-      background: '#1e1e2e',
-      foreground: '#cdd6f4',
-      cursor: '#f5e0dc',
-      selectionBackground: '#585b7066',
-      black: '#45475a',
-      red: '#f38ba8',
-      green: '#a6e3a1',
-      yellow: '#f9e2af',
-      blue: '#89b4fa',
-      magenta: '#f5c2e7',
-      cyan: '#94e2d5',
-      white: '#bac2de',
-      brightBlack: '#585b70',
-      brightRed: '#f38ba8',
-      brightGreen: '#a6e3a1',
-      brightYellow: '#f9e2af',
-      brightBlue: '#89b4fa',
-      brightMagenta: '#f5c2e7',
-      brightCyan: '#94e2d5',
-      brightWhite: '#a6adc8',
-    },
+    theme,
   })
 
   fitAddon = new FitAddon()
@@ -152,7 +163,7 @@ function reconnect() {
 }
 
 function close() {
-  emit('update:visible', false)
+  emit('close')
 }
 
 function fitTerminal() {
@@ -211,20 +222,12 @@ function onResizeEnd() {
 // ------------------------------------------------------------------
 // Lifecycle
 // ------------------------------------------------------------------
-watch(() => props.visible, async (show) => {
-  if (show) {
-    await nextTick()
-    if (!terminal) {
-      createTerminal()
-      connectWs()
-    } else {
-      fitTerminal()
-    }
-    terminal?.focus()
-  }
-})
+onMounted(async () => {
+  await nextTick()
+  createTerminal()
+  connectWs()
+  terminal?.focus()
 
-onMounted(() => {
   resizeObserver = new ResizeObserver(() => fitTerminal())
   if (terminalRef.value) {
     resizeObserver.observe(terminalRef.value)
@@ -278,6 +281,24 @@ onBeforeUnmount(() => {
 .web-terminal-header-actions {
   display: flex;
   gap: 4px;
+  align-items: center;
+}
+
+.web-terminal-theme-select {
+  height: 22px;
+  max-width: 150px;
+  border: 1px solid #585b70;
+  border-radius: 4px;
+  background: #1e1e2e;
+  color: #cdd6f4;
+  font-size: 11px;
+  padding: 0 4px;
+  cursor: pointer;
+  outline: none;
+}
+
+.web-terminal-theme-select:hover {
+  border-color: #a6adc8;
 }
 
 .web-terminal-btn {

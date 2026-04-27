@@ -22,18 +22,26 @@
   - **macOS / Linux**：使用 Python 標準庫 `pty.fork()` + `select`
   - **Windows**：使用 `pywinpty`（需額外安裝：`uv add pywinpty`）
 
+### 環境變數
+
+| 變數 | 預設值 | 說明 |
+|---|---|---|
+| `WEB_TERMINAL_ENABLED` | `false` | 設為 `true` 啟用 Web Terminal |
+| `WEB_TERMINAL_MAX_SESSIONS` | `2` | 同時允許開啟的最大終端數量 |
+
 ### API 端點
 
+- `GET /api/terminal/config` — 查詢功能是否啟用、上限與目前使用數
 - `WS /api/terminal/ws?cols=80&rows=24`
 
 ### 安全警語
 
 > **此功能等同於將後端主機的完整 shell 暴露至瀏覽器。**
 >
+> - **預設關閉**：須在 `.env` 明確設定 `WEB_TERMINAL_ENABLED=true` 才會啟用，前端按鈕也會隨之顯示。
 > - **Local 模式**：僅限本機存取，風險較低，但仍請注意不要在公開網路上啟動未受保護的 local 模式。
 > - **Remote 模式**：WebSocket 連線受現有 JWT 認證保護，僅已登入且在 email 白名單內的使用者可存取。但本質上仍是遠端 shell，請務必確保 HTTPS 傳輸加密、嚴格控管白名單，並避免在不受信任的網路環境下使用。
 > - 本功能不提供指令過濾或權限隔離機制，連線使用者擁有與後端執行身分相同的 shell 權限。
-> - 如不需要此功能，可在前端移除 Terminal 按鈕或不註冊後端 `terminal_router` 即可停用。
 
 ## 補充（2026-03-24）
 
