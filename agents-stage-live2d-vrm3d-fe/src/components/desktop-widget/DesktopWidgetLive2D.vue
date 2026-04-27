@@ -29,6 +29,7 @@ const STATE_MOTION_CANDIDATES: Record<SessionState, string[]> = {
   RESPONDING: ['main_3', 'main_2', 'main_1', 'home', 'taphead', 'idle'],
   WAITING: ['mail', 'home', 'login', 'idle'],
 }
+const MIN_MODEL_SCALE = 0.06
 const IDLE_MOTION_INTERVAL_MS = 10_000
 const IDLE_MOTION_JITTER_MS = 2_500
 
@@ -105,7 +106,7 @@ function layoutModel(): void {
   const bottomPadding = 8
   const availableWidth = Math.max(1, width - horizontalPadding * 2)
   const availableHeight = Math.max(1, height - topPadding - bottomPadding)
-  const scale = Math.max(0.08, Math.min(
+  const scale = Math.max(MIN_MODEL_SCALE, Math.min(
     availableWidth / naturalWidth,
     availableHeight / naturalHeight,
   ))

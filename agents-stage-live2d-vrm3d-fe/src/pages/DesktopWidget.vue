@@ -24,6 +24,12 @@
         <span v-if="monitor.lastEventText.value">{{ monitor.lastEventText.value }}</span>
       </div>
     </footer>
+
+    <div class="resize-corner" aria-hidden="true">
+      <span></span>
+      <span></span>
+      <span></span>
+    </div>
   </main>
 </template>
 
@@ -196,5 +202,39 @@ function reloadWindow(): void {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.resize-corner {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  z-index: 30;
+  display: grid;
+  width: 22px;
+  height: 22px;
+  align-content: end;
+  justify-items: end;
+  gap: 2px;
+  pointer-events: none;
+}
+
+.resize-corner span {
+  display: block;
+  height: 2px;
+  border-radius: 999px;
+  background: rgb(222 239 255 / 90%);
+  box-shadow: 0 1px 8px rgb(0 0 0 / 25%);
+}
+
+.resize-corner span:nth-child(1) {
+  width: 7px;
+}
+
+.resize-corner span:nth-child(2) {
+  width: 12px;
+}
+
+.resize-corner span:nth-child(3) {
+  width: 17px;
 }
 </style>

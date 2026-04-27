@@ -18,8 +18,8 @@ function createWidgetWindow() {
   widgetWindow = new BrowserWindow({
     width: 360,
     height: 520,
-    minWidth: 300,
-    minHeight: 420,
+    minWidth: 260,
+    minHeight: 360,
     transparent: true,
     frame: false,
     resizable: true,
