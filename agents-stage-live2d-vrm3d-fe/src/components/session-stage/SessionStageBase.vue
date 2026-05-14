@@ -27,7 +27,7 @@
         type="button"
         @click="openMasterAgent"
       >
-        總控 Agent
+        🎭 導演
       </button>
       <button
         v-if="terminalEnabled"
@@ -312,7 +312,7 @@
             <option value="max">max (Opus)</option>
           </select>
           <select v-model="newSessionForm.permission_mode">
-            <option value="default">執行模式: 預設 (工作區可寫 / Codex full-auto)</option>
+            <option value="default">執行模式: 預設 (Codex 自動模式)</option>
             <option value="auto">執行模式: Auto (自動審批安全操作)</option>
             <option value="plan">執行模式: Plan (僅規劃不執行)</option>
             <option value="full">執行模式: 完整存取權 (跳過 sandbox)</option>

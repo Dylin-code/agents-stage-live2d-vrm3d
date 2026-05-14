@@ -268,3 +268,82 @@ export async function issueTelegramBindingCode(serverUrl?: string): Promise<Tele
   }
   return (await response.json()) as TelegramBindingCode
 }
+
+// ---------------------------------------------------------------------------
+// Persona (角色設定)
+// ---------------------------------------------------------------------------
+
+export interface PersonaConfig {
+  enabled: boolean
+  display_name: string
+  summary: string
+  personality: string[]
+  speaking_style: string
+  catchphrase: string
+  boundaries: string[]
+}
+
+export interface PersonaPresetSummary {
+  id: string
+  display_name: string
+  summary: string
+  enabled: boolean
+}
+
+export interface PersonaSnapshot {
+  persona: PersonaConfig | null
+  presets: PersonaPresetSummary[]
+}
+
+export async function fetchPersona(serverUrl?: string): Promise<PersonaSnapshot> {
+  const response = await fetch(`${resolveBase(serverUrl)}${BASE_PATH}/persona`)
+  if (!response.ok) {
+    throw new Error(`failed to fetch persona: ${response.status}`)
+  }
+  return (await response.json()) as PersonaSnapshot
+}
+
+export async function updatePersona(
+  persona: PersonaConfig,
+  serverUrl?: string,
+): Promise<PersonaConfig> {
+  const response = await fetch(`${resolveBase(serverUrl)}${BASE_PATH}/persona`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(persona),
+  })
+  if (!response.ok) {
+    const text = await response.text().catch(() => '')
+    throw new Error(text || `failed to update persona: ${response.status}`)
+  }
+  const payload = (await response.json()) as { persona: PersonaConfig }
+  return payload.persona
+}
+
+export async function resetPersona(serverUrl?: string): Promise<PersonaConfig> {
+  const response = await fetch(`${resolveBase(serverUrl)}${BASE_PATH}/persona/reset`, {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    throw new Error(`failed to reset persona: ${response.status}`)
+  }
+  const payload = (await response.json()) as { persona: PersonaConfig }
+  return payload.persona
+}
+
+export async function applyPersonaPreset(
+  presetId: string,
+  serverUrl?: string,
+): Promise<PersonaConfig> {
+  const response = await fetch(`${resolveBase(serverUrl)}${BASE_PATH}/persona/apply-preset`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ preset_id: presetId }),
+  })
+  if (!response.ok) {
+    const text = await response.text().catch(() => '')
+    throw new Error(text || `failed to apply preset: ${response.status}`)
+  }
+  const payload = (await response.json()) as { persona: PersonaConfig }
+  return payload.persona
+}

@@ -1,7 +1,6 @@
 """Agent provider router — dispatches to the correct CLI chat service based on brand."""
 
 import os
-import platform
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Union
@@ -11,6 +10,28 @@ from .session_bridge_claude_chat import ClaudeSessionChatService
 from .session_bridge_shared import AGENT_BRAND_CLAUDE, AGENT_BRAND_CODEX
 
 ChatService = Union[CodexSessionChatService, ClaudeSessionChatService]
+
+_CODEX_MODELS: tuple[str, ...] = (
+    "gpt-5.5",
+    "gpt-5.5-pro",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.4-nano",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex-max",
+    "gpt-5.2",
+)
+
+_CLAUDE_MODELS: tuple[str, ...] = (
+    "claude-opus-4-7",
+    "claude-sonnet-4-6",
+    "claude-opus-4-6",
+    "claude-haiku-4-5-20251001",
+    "sonnet",
+    "opus",
+    "haiku",
+)
 
 
 @dataclass(frozen=True)
@@ -28,7 +49,7 @@ _BRAND_METADATA: dict[str, AgentBrandMetadata] = {
         brand=AGENT_BRAND_CODEX,
         display_name="Codex",
         badge_icon="/brand/codex-badge.svg",
-        models=("gpt-5.3-codex", "gpt-5.4", "gpt-5.2-codex", "gpt-5.1-codex-max", "gpt-5.2"),
+        models=_CODEX_MODELS,
         session_dir_env="CODEX_SESSION_DIR",
         session_dir_default="~/.codex/sessions",
     ),
@@ -36,7 +57,7 @@ _BRAND_METADATA: dict[str, AgentBrandMetadata] = {
         brand=AGENT_BRAND_CLAUDE,
         display_name="Claude",
         badge_icon="/brand/claude-badge.svg",
-        models=("claude-opus-4-7", "claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5-20251001", "sonnet", "opus", "haiku"),
+        models=_CLAUDE_MODELS,
         session_dir_env="CLAUDE_SESSION_DIR",
         session_dir_default="~/.claude/projects",
     ),
@@ -113,9 +134,7 @@ class AgentProviderRouter:
 
     @staticmethod
     def default_permission_mode(brand: str) -> str:
-        normalized = AgentProviderRouter.normalize_brand(brand)
-        if normalized == AGENT_BRAND_CODEX and platform.system() == "Windows":
-            return "full"
+        AgentProviderRouter.normalize_brand(brand)
         return "default"
 
     @staticmethod

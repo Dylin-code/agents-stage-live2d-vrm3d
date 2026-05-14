@@ -6,19 +6,41 @@ export interface AgentBrandCatalogItem {
   default_permission_mode?: string
 }
 
+export const CODEX_AGENT_MODELS = [
+  'gpt-5.5',
+  'gpt-5.5-pro',
+  'gpt-5.4',
+  'gpt-5.4-mini',
+  'gpt-5.4-nano',
+  'gpt-5.3-codex',
+  'gpt-5.2-codex',
+  'gpt-5.1-codex-max',
+  'gpt-5.2',
+]
+
+export const CLAUDE_AGENT_MODELS = [
+  'claude-opus-4-7',
+  'claude-sonnet-4-6',
+  'claude-opus-4-6',
+  'claude-haiku-4-5-20251001',
+  'sonnet',
+  'opus',
+  'haiku',
+]
+
 export const DEFAULT_AGENT_BRANDS: AgentBrandCatalogItem[] = [
   {
     brand: 'codex',
     display_name: 'Codex',
     badge_icon: '/brand/codex-badge.svg',
-    models: ['gpt-5.3-codex', 'gpt-5.4', 'gpt-5.2-codex', 'gpt-5.1-codex-max', 'gpt-5.2'],
+    models: CODEX_AGENT_MODELS,
     default_permission_mode: 'default',
   },
   {
     brand: 'claude',
     display_name: 'Claude',
     badge_icon: '/brand/claude-badge.svg',
-    models: ['claude-opus-4-7', 'claude-sonnet-4-6', 'claude-opus-4-6', 'claude-haiku-4-5-20251001', 'sonnet', 'opus', 'haiku'],
+    models: CLAUDE_AGENT_MODELS,
     default_permission_mode: 'default',
   },
 ]

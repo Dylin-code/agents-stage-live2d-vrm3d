@@ -28,6 +28,7 @@ from telegram.ext import (
     filters,
 )
 
+from ..persona import DEFAULT_DISPLAY_NAME
 from ..service import MasterAgentService
 from .binding_store import Binding, BindingStore
 from .bridge import EventBridge, TelegramMessenger
@@ -38,21 +39,27 @@ _LOGGER = logging.getLogger(__name__)
 ServiceProvider = Callable[[], Awaitable[MasterAgentService]]
 
 
-_HELP_TEXT = (
-    "🤖 *總控 Agent Telegram Bot*\n\n"
-    "請先到網頁的『總控 Agent → 綁定 Telegram』取得 6 位數綁定碼，"
-    "然後在這裡輸入：\n"
-    "`/bind 123456`\n\n"
-    "綁定後可直接傳訊息派工給總控。\n\n"
-    "*指令*\n"
-    "/bind <code> — 綁定到網頁端會話\n"
-    "/unbind — 解除綁定\n"
-    "/new — 開啟一段新對話\n"
-    "/abort — 中止當前任務\n"
-    "/status — 顯示綁定狀態\n"
-    "/whoami — 顯示你的 TG user id（用來設白名單）\n"
-    "/help — 顯示說明"
-)
+def _render_help_text(display_name: str) -> str:
+    """Build the /start /help reply with the agent's current persona name.
+
+    Built dynamically (not a module constant) so renaming the agent on
+    the persona panel takes effect immediately — no bot restart needed.
+    """
+    return (
+        f"🤖 *{display_name} Bot*\n\n"
+        f"請先到網頁的『{display_name} → 綁定 Telegram』取得 6 位數綁定碼，"
+        "然後在這裡輸入：\n"
+        "`/bind 123456`\n\n"
+        f"綁定後可直接傳訊息派工給 {display_name}。\n\n"
+        "*指令*\n"
+        "/bind <code> — 綁定到網頁端會話\n"
+        "/unbind — 解除綁定\n"
+        "/new — 開啟一段新對話\n"
+        "/abort — 中止當前任務\n"
+        "/status — 顯示綁定狀態\n"
+        "/whoami — 顯示你的 TG user id（用來設白名單）\n"
+        "/help — 顯示說明"
+    )
 
 
 class _ChatMessenger:
@@ -181,9 +188,10 @@ class TelegramBotApp:
         chat_id = self._chat_id_of(update)
         if chat_id is None:
             return
+        display_name = await self._current_display_name()
         await context.bot.send_message(
             chat_id=chat_id,
-            text=_HELP_TEXT,
+            text=_render_help_text(display_name),
             parse_mode="Markdown",
         )
 
@@ -216,12 +224,13 @@ class TelegramBotApp:
             tg_username=(user.username or "") if user else "",
             tg_first_name=(user.first_name or "") if user else "",
         )
+        display_name = await self._current_display_name()
         await context.bot.send_message(
             chat_id=chat_id,
             text=(
                 "✅ 已綁定！\n"
                 f"對話 ID: `{binding.conversation_id[:12]}`\n\n"
-                "現在直接傳訊息就會派給總控 Agent。/help 查看指令。"
+                f"現在直接傳訊息就會派給 {display_name}。/help 查看指令。"
             ),
             parse_mode="Markdown",
         )
@@ -389,6 +398,23 @@ class TelegramBotApp:
     def _chat_id_of(update: Update) -> Optional[int]:
         chat = update.effective_chat
         return int(chat.id) if chat is not None else None
+
+    async def _current_display_name(self) -> str:
+        """Resolve the agent's user-facing name from the persona store.
+
+        Falls back to the default name when persona isn't configured
+        (older deployments / tests that don't inject a persona store).
+        """
+        try:
+            service = await self._service_provider()
+            store = service.persona_store
+            if store is None:
+                return DEFAULT_DISPLAY_NAME
+            persona = await store.get()
+            return (persona.display_name or "").strip() or DEFAULT_DISPLAY_NAME
+        except Exception:  # noqa: BLE001 — name lookup must never break a handler
+            _LOGGER.debug("display name lookup failed", exc_info=True)
+            return DEFAULT_DISPLAY_NAME
 
     async def _lock_for(self, chat_id: int) -> asyncio.Lock:
         async with self._chat_locks_guard:

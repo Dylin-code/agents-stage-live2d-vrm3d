@@ -26,9 +26,15 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 
+from pathlib import Path
+
+from pydantic import BaseModel, Field
+
 from .broadcaster import MasterAgentBroadcaster, subtask_event
 from .conversation_store import FileConversationStore
 from .llm.factory import build_chat_model, describe_active_llm, resolve_tool_mode
+from .persona import DEFAULT_DISPLAY_NAME, FilePersonaStore, PersonaConfig
+from .persona_presets import get_preset, list_presets
 from .service import MasterAgentService
 from .shared import (
     MasterAgentAbortRequest,
@@ -118,6 +124,7 @@ async def _get_service() -> MasterAgentService:
         chat_model = build_chat_model()
         tracker = SubTaskTracker(state_change_hook=_on_subtask_change)
         conversation_store = FileConversationStore()
+        persona_store = FilePersonaStore(_resolve_persona_path())
         _service_instance = MasterAgentService(
             chat_model=chat_model,
             agent_provider=agent_provider,
@@ -126,8 +133,22 @@ async def _get_service() -> MasterAgentService:
             tool_mode=resolve_tool_mode(),
             task_tracker=tracker,
             conversation_store=conversation_store,
+            persona_store=persona_store,
         )
         return _service_instance
+
+
+def _resolve_persona_path() -> Path:
+    """Persona file sits next to conversations under <repo>/config/master-agent.
+
+    Walk up four levels: api.py → master_agent → live2d_server → server-pkg
+    → repo root. Matches the same convention used by
+    :class:`FileConversationStore`.
+    """
+    return (
+        Path(__file__).resolve().parents[3]
+        / "config" / "master-agent" / "persona.json"
+    )
 
 
 def configure_service(service: MasterAgentService) -> None:
@@ -221,6 +242,84 @@ async def subtask_detail(subtask_id: str) -> dict[str, object]:
 @router.get("/llm/info")
 async def llm_info() -> dict[str, str]:
     return describe_active_llm()
+
+
+# ---------------------------------------------------------------------------
+# Persona endpoints
+# ---------------------------------------------------------------------------
+
+
+class PersonaUpdateRequest(BaseModel):
+    enabled: bool = True
+    display_name: str = Field(default=DEFAULT_DISPLAY_NAME, max_length=80)
+    summary: str = Field(default="", max_length=600)
+    personality: list[str] = Field(default_factory=list, max_length=20)
+    speaking_style: str = Field(default="", max_length=1200)
+    catchphrase: str = Field(default="", max_length=200)
+    boundaries: list[str] = Field(default_factory=list, max_length=20)
+
+
+@router.get("/persona")
+async def persona_get() -> dict[str, object]:
+    service = await _get_service()
+    store = service.persona_store
+    if store is None:
+        # Should not happen in production wiring, but keep the API
+        # honest if a test injects a service without a persona store.
+        return {"persona": None, "presets": list_presets()}
+    persona = await store.get()
+    return {"persona": persona.to_dict(), "presets": list_presets()}
+
+
+@router.put("/persona")
+async def persona_update(request: PersonaUpdateRequest) -> dict[str, object]:
+    service = await _get_service()
+    store = service.persona_store
+    if store is None:
+        raise HTTPException(status_code=503, detail="persona store not initialized")
+    updated = await store.set(PersonaConfig(
+        enabled=request.enabled,
+        display_name=request.display_name,
+        summary=request.summary,
+        personality=list(request.personality),
+        speaking_style=request.speaking_style,
+        catchphrase=request.catchphrase,
+        boundaries=list(request.boundaries),
+    ))
+    return {"persona": updated.to_dict()}
+
+
+@router.post("/persona/reset")
+async def persona_reset() -> dict[str, object]:
+    service = await _get_service()
+    store = service.persona_store
+    if store is None:
+        raise HTTPException(status_code=503, detail="persona store not initialized")
+    persona = await store.reset_to_default()
+    return {"persona": persona.to_dict()}
+
+
+@router.post("/persona/apply-preset")
+async def persona_apply_preset(payload: dict[str, str]) -> dict[str, object]:
+    """Apply a built-in preset and save it as the current persona.
+
+    The preset id comes from :func:`list_presets`; unknown ids 404.
+    Unlike ``GET /persona`` (which returns the preset *list*), this
+    endpoint commits the preset to the store so the next chat hop
+    picks it up.
+    """
+    preset_id = (payload.get("preset_id") or "").strip()
+    if not preset_id:
+        raise HTTPException(status_code=400, detail="preset_id is required")
+    preset = get_preset(preset_id)
+    if preset is None:
+        raise HTTPException(status_code=404, detail=f"preset {preset_id} not found")
+    service = await _get_service()
+    store = service.persona_store
+    if store is None:
+        raise HTTPException(status_code=503, detail="persona store not initialized")
+    applied = await store.set(preset)
+    return {"persona": applied.to_dict(), "preset_id": preset_id}
 
 
 # ---------------------------------------------------------------------------

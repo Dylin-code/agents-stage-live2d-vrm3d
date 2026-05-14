@@ -81,12 +81,13 @@
 - `#full` — 出現在訊息任何位置（會被剝離）→ 該回合允許 `permission_mode=full`（完全沒沙箱）。沒這關鍵字時，LLM 試圖用 `full` 會被自動降為 `auto`
 - 可組合：`#new #full do dangerous thing` = 開新對話 + 解鎖 full + 送出 `do dangerous thing`
 
-**權限策略（auto-review 預設、`full` gated）**：
-- Master agent 預設 `permission_mode=auto`：
-  - codex CLI 跑 `codex -a on-request exec -c 'approvals_reviewer="auto_review"' --sandbox workspace-write …` → 獨立 reviewer 子代理自動審核需 escalation 的命令
+**權限策略（Codex 自動模式預設、`full` gated）**：
+- Master agent 預設使用 provider default：
+  - codex CLI 跑 `codex exec --sandbox <automation-sandbox> …`；非 Windows 使用 `workspace-write`，Windows 因 Codex CLI sandbox 會在 shell tool 噴 `CreateProcessAsUserW failed: 5`，改用 `danger-full-access`
   - claude CLI 跑 `claude -p --permission-mode auto …` → 走 claude 內建 auto classifier
-- LLM 明確指定 `permission_mode=plan` / `auto` → 照用
-- LLM 明確指定 `permission_mode=full` → **預設拒絕、降為 auto**；只有使用者訊息含 `#full` 時 API 端會帶 `permit_full_access=true`，這時 `full` 才被認可，CLI 才會掛 `--dangerously-bypass-approvals-and-sandbox` / `--dangerously-skip-permissions`
+- LLM 明確指定 `permission_mode=auto` → codex 走 `-a on-request` + `approvals_reviewer="auto_review"`；claude 走 `--permission-mode auto`
+- LLM 明確指定 `permission_mode=plan` → 照用
+- LLM 明確指定 `permission_mode=full` → **預設拒絕、降回 provider default**；只有使用者訊息含 `#full` 時 API 端會帶 `permit_full_access=true`，這時 `full` 才被認可，CLI 才會掛 `--dangerously-bypass-approvals-and-sandbox` / `--dangerously-skip-permissions`
 
 ### 環境變數
 
@@ -123,7 +124,7 @@
 - `list_available_models(agent_brand?)` — 查每個品牌支援的 model 清單與預設 permission_mode
 - `browse_directories(path?)` — 列指定路徑下的子目錄（同舞台 cwd picker 的後端），用來把「桌面的 my-repo」這種模糊描述解成絕對路徑；不給 path 回 drive roots / `/`，上限 200 entries
 
-**模型參數調整**：`*_new_session` 與 `*_send_prompt` 都接受 `model` / `reasoning_effort` (`minimal`/`low`/`medium`/`high`/`xhigh`) / `permission_mode` (`default`/`auto`/`plan`/`full`) / `plan_mode`。new_session 設的是 session 預設值；send_prompt 設的是該單回合 override。Windows 上 codex 預設 `permission_mode=full`（workspace-write sandbox 不支援）。
+**模型參數調整**：`*_new_session` 與 `*_send_prompt` 都接受 `model` / `reasoning_effort` (`minimal`/`low`/`medium`/`high`/`xhigh`) / `permission_mode` (`default`/`auto`/`plan`/`full`) / `plan_mode`。new_session 設的是 session 預設值；send_prompt 設的是該單回合 override。Codex 的 `default` 會走平台自動模式；只有明確選 `full` 才會掛 `--dangerously-bypass-approvals-and-sandbox`。
 
 **長任務 timeout**：
 
@@ -148,6 +149,52 @@
 
 **Terminator**
 - `report_to_user(text)` — 結束本回合，把 text 顯示給使用者
+
+## 重要更新：總控 Agent 角色設定 / 「導演」預設（2026-05-14）
+
+把總控從純工具升級為**有角色感的舞台導演**。預設名稱為「導演」，會以鏡頭調度的視角描述任務；使用者可在前端「🎭 角色設定」面板隨時換名、改說話風格、套用內建預設，或關掉角色回到純工具模式。
+
+### 設計重點
+
+- **Persona 只影響 user-facing 文字**（`report_to_user` 的 text、`final_text`）；工具呼叫的 JSON / 參數**完全不被人設影響**，prompt builder 明確在 persona block 加了這條 wall。
+- **跨 hop 穩定**：persona 一次對話讀一次，不每 hop 重讀，配合 prompt cache 較友善。
+- **`enabled=False` = byte-identical legacy prompt**：純工具模式下 persona section 完全 skip，等於沒人設前的行為。
+- **持久化**：寫入 `config/master-agent/persona.json`（atomic write），server 重啟保留設定；該檔已加進 `.gitignore`。
+
+### 內建預設（一鍵套用 + 可再編輯）
+
+| id | display_name | 風格 |
+|---|---|---|
+| `director`（預設） | 導演 | 沉穩、鏡頭感，用「下一個鏡頭」「場記開始──」這類舞台語言 |
+| `calm-assistant` | 助理 | 冷靜、極簡、條列，先講結論 |
+| `fellow-coder` | 阿凱 | 熱血工程師夥伴，輕鬆口語但派工指令精準 |
+| `tool-only` | 總控 Agent | `enabled=false`，回到純工具模式 |
+
+### PersonaConfig 欄位
+
+| 欄位 | 用途 |
+|---|---|
+| `enabled` | 關閉 = persona 完全不注入 prompt |
+| `display_name` | LLM 自稱、TG `/whoami` / 前端 chip 顯示 |
+| `summary` | 一句話介紹（注入 prompt 開頭） |
+| `personality` | 性格特質列表，逗號 / 頓號分隔輸入 |
+| `speaking_style` | 自由文本，越具體越好（語氣詞、人稱代名詞、節奏） |
+| `catchphrase` | 開場語 / 口頭禪，prompt 提示「自然帶入，不必每則訊息都用」 |
+| `boundaries` | 不可碰的界線（不打破第四面牆、不假裝寫碼 …） |
+
+### 新增 API
+
+- `GET /api/master-agent/persona` — 回 `{persona, presets}`
+- `PUT /api/master-agent/persona` — 全量替換 PersonaConfig
+- `POST /api/master-agent/persona/reset` — 重置為預設「導演」
+- `POST /api/master-agent/persona/apply-preset` — body `{preset_id}`，套用內建預設
+
+### 前端入口
+
+`/master-agent` topbar 標題旁新增「🎭 <display_name>」chip：
+
+- 點擊 → 開啟角色設定面板（preset 下拉、欄位編輯、啟用 toggle、重置）
+- 顯示「🎭 純工具」chip + 灰色樣式 = 目前是 `enabled=false`
 
 ## 重要更新：總控 Agent Telegram 整合（2026-05-14）
 
@@ -211,7 +258,7 @@
 - 已新增 session / 對話層級的「角色個性」功能，可在建立 session 或續聊時切換 persona
 - 2D / 3D 舞台左上角齒輪已加入角色個性 CRUD 編輯
 - 新建 session 的 `cwd` 已改成可透過後端目錄瀏覽器挑選，遠端模式下會列出 server 主機的目錄而不是前端裝置本機目錄
-- Windows 上建立 `Codex` session 時，預設 `permission mode` 會自動使用 `full`，避免 `workspace-write` sandbox 在該環境下無法啟動
+- 建立 `Codex` session 時，預設 `permission mode` 使用 `default`，後端會交給 Codex CLI 的平台自動模式，避免誤用危險 bypass flag
 
 ## 核心能力
 
@@ -445,10 +492,10 @@ Electron 預設載入 `http://127.0.0.1:5173/desktop-widget`，視窗為透明�
 
 `permission mode` 的預設值會依品牌 catalog 決定：
 
-- Windows + `Codex`：預設 `full`
+- Codex：預設 `default`（CLI 平台自動模式）
 - 其他情況：預設 `default`
 
-目前這樣設計是因為這台環境上的 `Codex workspace-write` sandbox 在 Windows 會出現 `CreateProcessAsUserW failed: 5`，因此建立新 session 時直接預設為 `full`，mac 不受影響。
+目前設計避免把新 session 預設成 `full`，因為 `full` 會掛危險 bypass flag；若使用者確實需要完全存取，必須在介面明確選擇或在導演訊息中使用 `#full`。
 
 前端會透過統一 API 建立 brand-aware session，不需要為不同品牌切換不同頁面。
 

@@ -7,6 +7,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 import uuid
 import math
@@ -36,6 +37,21 @@ CODEX_CLI_MAX_TIMEOUT_ENV = "CODEX_CLI_MAX_TIMEOUT_SEC"
 CODEX_CLI_APPROVAL_TIMEOUT_ENV = "CODEX_CLI_APPROVAL_TIMEOUT_SEC"
 
 
+def _codex_workspace_sandbox_mode() -> str:
+    """Return the sandbox mode used for Codex non-full automation.
+
+    Codex CLI 0.130.0 still maps ``--full-auto`` to workspace-write, but
+    on this Windows environment every shell tool launched under that
+    sandbox fails with ``CreateProcessAsUserW failed: 5``. Use
+    danger-full-access on Windows while keeping the permission_mode value
+    as ``default``/``auto`` so UI state does not imply the user explicitly
+    requested the dangerous bypass flag.
+    """
+    if sys.platform == "win32":
+        return "danger-full-access"
+    return "workspace-write"
+
+
 def _resolve_codex_exec_permission_settings(
     permission_mode: Optional[str],
     approval_policy: Optional[str],
@@ -51,15 +67,12 @@ def _resolve_codex_exec_permission_settings(
     if effective_mode == PERMISSION_MODE_AUTO:
         # Codex auto-review: the model is allowed to *ask* for approval
         # (``-a on-request``), and the configured reviewer
-        # (``approvals_reviewer = "auto_review"``) decides automatically
-        # whether each escalated request is safe. Sandbox stays at
-        # workspace-write so day-to-day edits don't need approval at all.
-        return effective_mode, "on-request", "workspace-write"
-    # default / plan / unknown → workspace-write + never-ask. codex exec
-    # only accepts ``-a/--ask-for-approval`` at the top level, never on
-    # ``exec`` itself, so the equivalent for non-interactive runs is the
-    # ``--full-auto`` convenience flag the caller injects below.
-    return effective_mode, "never", "workspace-write"
+        # (``approvals_reviewer = "auto_review"``) decides automatically.
+        return effective_mode, "on-request", _codex_workspace_sandbox_mode()
+    # default / plan / unknown → never-ask automation. On non-Windows this
+    # is workspace-write; on Windows we use the unsandboxed mode because
+    # the Codex Windows sandbox cannot launch shell tools in this setup.
+    return effective_mode, "never", _codex_workspace_sandbox_mode()
 
 
 def _read_timeout_env(name: str, default: float) -> float:
@@ -79,6 +92,17 @@ def _read_timeout_env(name: str, default: float) -> float:
         return default
     return value
 
+
+def _expand_cwd_text(cwd: str) -> str:
+    text = str(cwd or "").strip()
+    if not text:
+        return ""
+    expanded = Path(text).expanduser()
+    if text.startswith("/"):
+        return expanded.as_posix()
+    return str(expanded)
+
+
 class CodexSessionChatError(RuntimeError):
     pass
 
@@ -87,6 +111,7 @@ class CodexSessionChatService:
     def __init__(
         self,
         codex_bin: str = "codex",
+        timeout_sec: Optional[float] = None,
         idle_timeout_sec: Optional[float] = None,
         max_timeout_sec: Optional[float] = None,
         approval_timeout_sec: Optional[float] = None,
@@ -97,11 +122,15 @@ class CodexSessionChatService:
         self.idle_timeout_sec = (
             float(idle_timeout_sec)
             if idle_timeout_sec is not None
+            else float(timeout_sec)
+            if timeout_sec is not None
             else _read_timeout_env(CODEX_CLI_IDLE_TIMEOUT_ENV, DEFAULT_CODEX_CLI_IDLE_TIMEOUT_SEC)
         )
         self.max_timeout_sec = (
             float(max_timeout_sec)
             if max_timeout_sec is not None
+            else float(timeout_sec)
+            if timeout_sec is not None
             else _read_timeout_env(CODEX_CLI_MAX_TIMEOUT_ENV, DEFAULT_CODEX_CLI_MAX_TIMEOUT_SEC)
         )
         self.default_cwd = _resolve_default_chat_cwd(default_cwd)
@@ -207,10 +236,9 @@ class CodexSessionChatService:
             sandbox_mode=sandbox_mode,
         )
         cmd.append("exec")
-        # ``--full-auto`` / ``--dangerously-bypass-approvals-and-sandbox``
-        # / ``--sandbox`` + ``-c approvals_reviewer=...`` are subcommand
-        # flags of ``exec``; newer codex CLI rejects them as top-level
-        # flags ("tip: 'exec --full-auto' exists").
+        # ``--dangerously-bypass-approvals-and-sandbox`` / ``--sandbox``
+        # + ``-c approvals_reviewer=...`` are subcommand flags of
+        # ``exec``; newer codex CLI rejects them as top-level flags.
         self._append_codex_exec_permission_args(
             cmd,
             permission_mode=permission_mode,
@@ -266,15 +294,18 @@ class CodexSessionChatService:
             cmd.append("--dangerously-bypass-approvals-and-sandbox")
             return
         if effective_mode == PERMISSION_MODE_AUTO:
-            # auto-review: tell exec to use workspace-write sandbox and
+            # auto-review: tell exec which automation sandbox to use and
             # delegate escalation decisions to the auto_review subagent.
             cmd.extend([
                 "-c", 'approvals_reviewer="auto_review"',
-                "--sandbox", "workspace-write",
+                "--sandbox", _codex_workspace_sandbox_mode(),
             ])
             return
-        # default / plan / unknown → --full-auto (= workspace-write + never-ask)
-        cmd.append("--full-auto")
+        # default / plan / unknown → explicit sandbox + never-ask. This
+        # replaces the deprecated --full-auto flag while preserving the
+        # same non-interactive default on platforms where workspace-write
+        # works.
+        cmd.extend(["--sandbox", _codex_workspace_sandbox_mode()])
 
     # Backwards-compatible alias retained for any out-of-tree callers
     # that may have imported the old function name. New code should use
@@ -809,7 +840,7 @@ class CodexSessionChatService:
         sandbox_mode: Optional[str] = None,
         plan_mode: Optional[bool] = None,
     ) -> dict[str, Any]:
-        cwd_value = str(Path(cwd).expanduser()) if cwd else self.default_cwd
+        cwd_value = _expand_cwd_text(cwd) if cwd else self.default_cwd
         bootstrap_prompt = "Initialize a new codex session. Reply with: SESSION_READY"
         prompt = bootstrap_prompt
         plan_mode_fallback = False

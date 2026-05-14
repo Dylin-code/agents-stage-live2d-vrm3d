@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  CODEX_AGENT_MODELS,
   DEFAULT_AGENT_BRANDS,
   buildAgentBrandCatalog,
   getAgentBrandDefaultPermissionMode,
@@ -74,6 +75,13 @@ describe('normalizeAgentBrandCatalog', () => {
 })
 
 describe('buildAgentBrandCatalog', () => {
+  it('keeps latest GPT models in the built-in Codex catalog', () => {
+    expect(CODEX_AGENT_MODELS).toContain('gpt-5.5')
+    expect(CODEX_AGENT_MODELS).toContain('gpt-5.5-pro')
+    expect(CODEX_AGENT_MODELS).toContain('gpt-5.4-mini')
+    expect(DEFAULT_AGENT_BRANDS[0].models).toEqual(CODEX_AGENT_MODELS)
+  })
+
   it('prefers server catalog when present', () => {
     const catalog = buildAgentBrandCatalog([
       {

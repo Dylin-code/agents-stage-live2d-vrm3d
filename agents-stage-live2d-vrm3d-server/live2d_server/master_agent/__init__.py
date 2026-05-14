@@ -1,7 +1,5 @@
 """Master agent package — single point of contact that orchestrates codex/claude CLIs as tools."""
 
-from .api import router as master_agent_router
-from .service import MasterAgentService
 from .shared import (
     MasterAgentChatRequest,
     MasterAgentConversation,
@@ -19,3 +17,15 @@ __all__ = [
     "SubTask",
     "SubTaskStatus",
 ]
+
+
+def __getattr__(name: str):
+    if name == "master_agent_router":
+        from .api import router
+
+        return router
+    if name == "MasterAgentService":
+        from .service import MasterAgentService
+
+        return MasterAgentService
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

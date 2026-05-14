@@ -31,7 +31,7 @@
         <div class="agent-session-row">
           <label>Model</label>
           <select v-model="agentOptions.model" @change="emitAgentOptions">
-            <option value="">預設 ({{ agentOptions.agent_brand === 'claude' ? 'sonnet' : 'gpt-5.3-codex' }})</option>
+            <option value="">預設 (CLI default)</option>
             <option v-for="m in availableModels" :key="m" :value="m">{{ m }}</option>
           </select>
 
@@ -47,7 +47,7 @@
 
           <label>執行模式</label>
           <select v-model="agentOptions.permission_mode" @change="emitAgentOptions">
-            <option value="default">預設 (工作區可寫 / Codex full-auto)</option>
+            <option value="default">預設 (Codex 自動模式)</option>
             <option value="auto">Auto (自動審批安全操作)</option>
             <option value="plan">Plan (僅規劃不執行)</option>
             <option value="full">完整存取權 (跳過 sandbox)</option>
@@ -837,7 +837,7 @@ const sendMessageToServer = async (messages: ChatHistory[]) => {
         if (ctx.permission_mode) {
           agentOptions.value.permission_mode = String(ctx.permission_mode)
         } else if (ctx.sandbox_mode) {
-          agentOptions.value.permission_mode = String(ctx.sandbox_mode) === 'danger-full-access' ? 'full' : 'default'
+          agentOptions.value.permission_mode = 'default'
         }
         if (ctx.cwd) agentOptions.value.cwd_override = String(ctx.cwd)
         if (typeof ctx.plan_mode === 'boolean') agentOptions.value.plan_mode = !!ctx.plan_mode

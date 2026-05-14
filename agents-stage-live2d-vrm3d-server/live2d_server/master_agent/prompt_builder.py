@@ -18,6 +18,7 @@ import json
 from typing import Literal, Sequence
 
 from .contracts.llm_port import ToolSchema
+from .persona import PersonaConfig
 from .shared import SubTask
 
 ToolMode = Literal["native", "prompt"]
@@ -52,7 +53,7 @@ CONFIRMATION GATE (rule #0 — applies BEFORE any ``*_new_session``):
   * cwd (absolute path; if you inferred it, say how)
   * model (or "<CLI default>" if unset)
   * reasoning_effort (or "<model default>")
-  * permission_mode (auto / plan / full — flag if user used #full)
+  * permission_mode (default / auto / plan / full — flag if user used #full)
   * plan_mode (true/false)
   * first prompt you intend to send via ``*_send_prompt``
 - Pause and let the user reply. On the NEXT user message they will
@@ -132,22 +133,26 @@ Model / reasoning / permission tuning:
 
 - Both ``*_new_session`` and ``*_send_prompt`` accept ``model``,
   ``reasoning_effort`` (minimal/low/medium/high/xhigh),
-  ``permission_mode`` (auto/plan/full), and ``plan_mode``.
+  ``permission_mode`` (default/auto/plan/full), and ``plan_mode``.
 - Values on ``*_new_session`` become defaults for that session;
   values on ``*_send_prompt`` override just that one turn.
 - When the user asks for "more thinking" / "deeper reasoning", raise
   ``reasoning_effort``.
 - Permission mode semantics:
-  * ``auto`` (default, recommended) — workspace-write sandbox + an
-    auto-review classifier that decides which escalations are safe.
-    Use this almost always; it's safer than no-sandbox while still
-    autonomous for routine edits.
+  * ``default`` / omitted (default, recommended) — provider default.
+    For codex this uses the platform automation sandbox (workspace-write
+    where supported; Windows falls back to ``danger-full-access`` because
+    Codex CLI workspace-write fails to launch shell tools there). For
+    claude this maps to its auto permission mode. Use this almost always.
+  * ``auto`` — explicit auto-review mode. Codex uses ``-a on-request``
+    plus ``approvals_reviewer=auto_review``; claude uses
+    ``--permission-mode auto``.
   * ``plan`` — read-only; the worker produces a plan, no edits.
   * ``full`` — no sandbox, no approval, EVERYTHING is allowed. This
     is **gated**: if the user did NOT type ``#full`` somewhere in
     their message, your ``permission_mode=full`` will be silently
-    downgraded to ``auto``. Don't try to pass ``full`` on your own;
-    wait for the user to ask for it explicitly with ``#full``.
+    downgraded to the provider default. Don't try to pass ``full`` on
+    your own; wait for the user to ask for it explicitly with ``#full``.
 - ``wait_for_subtask`` — block up to ``timeout_sec`` seconds for a
   subtask you dispatched earlier. **Required after every send_prompt
   unless the user explicitly said "fire and forget"**. On timeout,
@@ -184,8 +189,14 @@ def build_system_prompt(
     extra_context: str = "",
     tool_mode: ToolMode = "native",
     tools: Sequence[ToolSchema] = (),
+    persona: PersonaConfig | None = None,
 ) -> str:
-    parts = [_BASE_SYSTEM_PROMPT.strip()]
+    parts: list[str] = []
+    persona_block = _render_persona_block(persona)
+    if persona_block:
+        parts.extend(persona_block)
+        parts.append("")  # blank line before the mechanical instructions
+    parts.append(_BASE_SYSTEM_PROMPT.strip())
     if tool_mode == "prompt" and tools:
         parts.append("")
         parts.extend(_render_prompt_tools_block(tools))
@@ -207,6 +218,48 @@ def build_system_prompt(
     if extra_context.strip():
         parts.append("\nAdditional context provided by caller:\n" + extra_context.strip())
     return "\n".join(parts)
+
+
+def _render_persona_block(persona: PersonaConfig | None) -> list[str]:
+    """Render the persona section that frames user-facing prose.
+
+    The block is intentionally placed **above** the mechanical
+    instructions so the model reads its voice first, then the rules.
+    The final line explicitly walls off tool-calling JSON so a chatty
+    persona can't break tool dispatch.
+
+    Returns ``[]`` when persona is disabled / missing, leaving the
+    prompt byte-identical to the pre-persona behavior.
+    """
+    if persona is None:
+        return []
+    p = persona.normalized()
+    if not p.enabled:
+        return []
+    lines: list[str] = [
+        "=== Persona ===",
+        f"你扮演的角色名稱:{p.display_name}",
+    ]
+    if p.summary:
+        lines.append(f"角色簡介:{p.summary}")
+    if p.personality:
+        lines.append(f"性格:{'、'.join(p.personality)}")
+    if p.speaking_style:
+        lines.append(f"說話風格:{p.speaking_style}")
+    if p.catchphrase:
+        lines.append(f"口頭禪 / 開場語:{p.catchphrase}(自然帶入,不必每則訊息都用)")
+    if p.boundaries:
+        lines.append("界線(務必遵守):")
+        for item in p.boundaries:
+            lines.append(f"  - {item}")
+    lines.extend([
+        "",
+        "Persona 範圍說明(重要):",
+        "- Persona **只影響** 你給使用者看的自然語言文字(``report_to_user`` 的 text 內容、final_text)。",
+        "- Persona **完全不影響** 工具呼叫的 JSON / 參數;tool args 必須照 schema 規定,不准混入旁白、表情、Markdown、catchphrase。",
+        "- 自我介紹時用上述角色名,不要說自己是 LLM 或 master agent。",
+    ])
+    return lines
 
 
 def _render_prompt_tools_block(tools: Sequence[ToolSchema]) -> list[str]:

@@ -173,6 +173,43 @@ describe('sessionStageChatAgentUtils', () => {
     expect(sessionAgentOptionsBySession.s1.permission_mode).toBe('full')
   })
 
+  it('does not infer full permission from danger sandbox alone', () => {
+    const sessionStore: Record<string, SessionSnapshotItem> = {
+      s1: {
+        ...createSession('s1', 'Session 1'),
+        context: { sandbox_mode: 'danger-full-access' },
+      },
+    }
+
+    const utils = createSessionStageChatAgentUtils({
+      storageKeyConversations: 'test-conversations-danger-sandbox',
+      conversationLimit: 20,
+      conversationSyncDebounceMs: 0,
+      serverUrl: () => '',
+      sessionStore,
+      sessionAgentOptionsBySession: {},
+      selectedChatSessionId: ref(''),
+      chatModalVisible: ref(false),
+      chatConversation: ref<Conversation>({
+        key: '',
+        label: '',
+        messages: [],
+        createdAt: 0,
+        updatedAt: 0,
+        group: undefined,
+      }),
+      chatSystemSettings: ref<SystemSettings>({} as SystemSettings),
+      conversationSyncTimers: new Map<string, number>(),
+      conversationSyncRunning: new Set<string>(),
+      conversationSyncQueued: new Set<string>(),
+      ensureSessionVisible: () => {},
+      syncActorsWithVisibility: () => {},
+      getBrandModels: () => [],
+    })
+
+    expect(utils.buildSessionAgentOptions(sessionStore.s1).permission_mode).toBe('default')
+  })
+
   it('hydrates persona fields from session context', () => {
     const sessionStore: Record<string, SessionSnapshotItem> = {
       s1: {

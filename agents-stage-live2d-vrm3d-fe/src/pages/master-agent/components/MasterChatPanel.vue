@@ -4,11 +4,19 @@ import type { MasterChatTurn } from '../masterAgentTypes'
 import { parseChatCommand } from '../chatCommands'
 import { renderMarkdown } from '../markdown'
 
-const props = defineProps<{
-  turns: MasterChatTurn[]
-  thinkingDraft: string
-  isStreaming: boolean
-}>()
+const props = withDefaults(
+  defineProps<{
+    turns: MasterChatTurn[]
+    thinkingDraft: string
+    isStreaming: boolean
+    displayName?: string
+  }>(),
+  { displayName: '導演' },
+)
+
+const placeholder = computed(
+  () => `跟 ${props.displayName || '導演'} 對話… (Enter 送出, Shift+Enter 換行;  #new 開新對話;  #full 允許全權限)`,
+)
 const emit = defineEmits<{
   (e: 'send', message: string, permitFullAccess: boolean): void
   (e: 'abort'): void
@@ -83,7 +91,7 @@ watch(
       <textarea
         v-model="message"
         class="input"
-        placeholder="跟總控對話… (Enter 送出, Shift+Enter 換行;  #new 開新對話;  #full 允許全權限)"
+        :placeholder="placeholder"
         rows="3"
         @keydown="onKeyDown"
       />

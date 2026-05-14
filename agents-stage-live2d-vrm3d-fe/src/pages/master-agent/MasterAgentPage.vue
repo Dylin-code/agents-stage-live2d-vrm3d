@@ -3,9 +3,12 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   fetchMasterAgentLlmInfo,
+  fetchPersona,
   type MasterLlmInfo,
+  type PersonaConfig,
 } from '../../utils/api/masterAgent'
 import MasterChatPanel from './components/MasterChatPanel.vue'
+import PersonaPanel from './components/PersonaPanel.vue'
 import SubTaskList from './components/SubTaskList.vue'
 import TelegramBindingPanel from './components/TelegramBindingPanel.vue'
 import { emptyRuntimeState, buildMasterAgentRuntime } from './useMasterAgent.runtime'
@@ -26,6 +29,15 @@ function backToStage(): void {
 // a slide-up drawer toggled from the topbar.
 const showMobileTasks = ref(false)
 const showTelegramPanel = ref(false)
+const showPersonaPanel = ref(false)
+const persona = ref<PersonaConfig | null>(null)
+
+const displayName = computed(() => persona.value?.display_name?.trim() || '導演')
+const personaActive = computed(() => persona.value?.enabled !== false)
+
+function onPersonaChanged(next: PersonaConfig) {
+  persona.value = next
+}
 
 const subtaskCount = computed(() => Object.keys(state.subtasks).length)
 
@@ -44,10 +56,17 @@ onMounted(async () => {
     errorBanner.value = `無法載入 LLM 資訊: ${msg}`
   }
   try {
+    const snapshot = await fetchPersona()
+    persona.value = snapshot.persona
+  } catch {
+    // Persona is non-critical for chat flow; leave it null and surface
+    // a fallback display name. The page still works without it.
+  }
+  try {
     await runtime.ensureConversation(undefined, cwdHint.value || undefined)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    errorBanner.value = `無法建立總控對話: ${msg}`
+    errorBanner.value = `建立對話失敗: ${msg}`
   }
   // Subscribe to the broadcast channel so subtask state changes from
   // other sources (or other tabs) show up immediately.
@@ -115,7 +134,15 @@ function toggleMobileTasks() {
         >
           ←
         </button>
-        <div class="title">總控 Agent</div>
+        <button
+          type="button"
+          class="title-chip"
+          :class="{ inactive: !personaActive }"
+          :title="personaActive ? '點擊修改角色設定' : '純工具模式 — 點擊啟用角色'"
+          @click="showPersonaPanel = true"
+        >
+          🎭 {{ displayName }}<span v-if="!personaActive" class="title-chip-tag">純工具</span>
+        </button>
         <div class="meta">
           <span v-if="llmInfo" class="meta-item">{{ llmInfo.provider }} / {{ llmInfo.model }}</span>
           <span v-if="state.conversationId" class="meta-item conv">{{ state.conversationId.slice(0, 8) }}</span>
@@ -164,6 +191,7 @@ function toggleMobileTasks() {
         :turns="state.turns"
         :thinking-draft="state.thinkingDraft"
         :is-streaming="state.isStreaming"
+        :display-name="displayName"
         @send="onSend"
         @abort="onAbort"
         @new-conversation="onNewConversation"
@@ -181,6 +209,11 @@ function toggleMobileTasks() {
       </aside>
     </div>
     <TelegramBindingPanel :open="showTelegramPanel" @close="showTelegramPanel = false" />
+    <PersonaPanel
+      :open="showPersonaPanel"
+      @close="showPersonaPanel = false"
+      @changed="onPersonaChanged"
+    />
   </div>
 </template>
 
@@ -234,9 +267,34 @@ function toggleMobileTasks() {
   gap: 12px;
   flex-wrap: wrap;
 }
-.topbar-row.primary .title {
-  font-weight: 700;
-  font-size: 16px;
+.title-chip {
+  padding: 6px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+  background: rgba(100, 181, 246, 0.2);
+  color: #e3f2fd;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  line-height: 1.2;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.title-chip.inactive {
+  background: rgba(255, 255, 255, 0.06);
+  color: #cfd8dc;
+}
+.title-chip:hover {
+  background: rgba(100, 181, 246, 0.32);
+}
+.title-chip-tag {
+  font-size: 11px;
+  font-weight: 500;
+  color: #b0bec5;
+  padding: 1px 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
 }
 .back-button {
   width: 32px;

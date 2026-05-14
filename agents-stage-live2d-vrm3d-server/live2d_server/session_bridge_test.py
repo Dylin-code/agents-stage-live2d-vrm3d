@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sys
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,6 +38,8 @@ from live2d_server.session_bridge import (
     bridge_git_branches,
     bridge_git_switch,
 )
+
+EXPECTED_CODEX_AUTOMATION_SANDBOX = "danger-full-access" if sys.platform == "win32" else "workspace-write"
 
 
 class _Completed:
@@ -1127,15 +1130,16 @@ class CodexSessionChatServiceTest(unittest.IsolatedAsyncioTestCase):
             approval_policy=None,
             sandbox_mode=None,
         )
-        self.assertIn("--full-auto", command)
+        self.assertIn("--sandbox", command)
+        self.assertEqual(command[command.index("--sandbox") + 1], EXPECTED_CODEX_AUTOMATION_SANDBOX)
+        self.assertNotIn("--full-auto", command)
         self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", command)
-        # Codex CLI requires --full-auto AFTER `exec` (it's a subcommand flag).
-        self.assertGreater(command.index("--full-auto"), command.index("exec"))
+        self.assertGreater(command.index("--sandbox"), command.index("exec"))
 
     async def test_build_cli_command_wires_auto_review_for_auto_mode(self) -> None:
         """Regression: codex auto mode must produce ``-a on-request`` at
         the top level AND ``-c approvals_reviewer="auto_review"`` +
-        ``--sandbox workspace-write`` on the exec subcommand. This is the
+        ``--sandbox <automation sandbox>`` on the exec subcommand. This is the
         non-interactive equivalent of TUI Auto-review."""
         service = CodexSessionChatService(codex_bin="codex", default_cwd="/tmp/workspace")
         command = service._build_cli_command(
@@ -1161,7 +1165,7 @@ class CodexSessionChatServiceTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("--sandbox", command)
         self.assertEqual(
-            command[command.index("--sandbox") + 1], "workspace-write",
+            command[command.index("--sandbox") + 1], EXPECTED_CODEX_AUTOMATION_SANDBOX,
         )
         # Auto mode must NOT include --full-auto or --dangerously-bypass.
         self.assertNotIn("--full-auto", command)
@@ -1240,11 +1244,13 @@ class CodexSessionChatServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["model"], "gpt-5-codex")
         self.assertEqual(payload["permission_mode"], "default")
         self.assertEqual(payload["approval_policy"], "never")
-        self.assertEqual(payload["sandbox_mode"], "workspace-write")
+        self.assertEqual(payload["sandbox_mode"], EXPECTED_CODEX_AUTOMATION_SANDBOX)
         cmd = recorded_args.get("cmd", [])
-        self.assertIn("--full-auto", cmd)
+        self.assertIn("--sandbox", cmd)
+        self.assertEqual(cmd[cmd.index("--sandbox") + 1], EXPECTED_CODEX_AUTOMATION_SANDBOX)
+        self.assertNotIn("--full-auto", cmd)
         self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", cmd)
-        self.assertGreater(cmd.index("--full-auto"), cmd.index("exec"))
+        self.assertGreater(cmd.index("--sandbox"), cmd.index("exec"))
         self.assertIsInstance(recorded_kwargs.get("env"), dict)
 
     async def test_create_session_prefers_runtime_turn_context_values(self) -> None:
@@ -1270,7 +1276,7 @@ class CodexSessionChatServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["effort"], "high")
         self.assertEqual(payload["permission_mode"], "default")
         self.assertEqual(payload["approval_policy"], "never")
-        self.assertEqual(payload["sandbox_mode"], "workspace-write")
+        self.assertEqual(payload["sandbox_mode"], EXPECTED_CODEX_AUTOMATION_SANDBOX)
 
     async def test_stream_prompt_skips_approval_request_in_full_mode(self) -> None:
         service = CodexSessionChatService(codex_bin="codex", timeout_sec=5, default_cwd="/tmp/workspace")
@@ -1524,7 +1530,7 @@ class BridgeCodexChatApiTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(captured.get("permission_mode"), "default")
         self.assertEqual(captured.get("approval_policy"), "never")
-        self.assertEqual(captured.get("sandbox_mode"), "workspace-write")
+        self.assertEqual(captured.get("sandbox_mode"), EXPECTED_CODEX_AUTOMATION_SANDBOX)
 
     async def test_bridge_codex_chat_request_permission_mode_overrides_session_runtime(self) -> None:
         session = _SessionRecord(
@@ -1557,7 +1563,7 @@ class BridgeCodexChatApiTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(captured.get("permission_mode"), "default")
         self.assertEqual(captured.get("approval_policy"), "never")
-        self.assertEqual(captured.get("sandbox_mode"), "workspace-write")
+        self.assertEqual(captured.get("sandbox_mode"), EXPECTED_CODEX_AUTOMATION_SANDBOX)
 
     async def test_bridge_codex_chat_request_full_mode_uses_dangerous_runtime(self) -> None:
         session = _SessionRecord(
@@ -1622,7 +1628,7 @@ class BridgeCodexChatApiTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(captured.get("permission_mode"), "default")
         self.assertEqual(captured.get("approval_policy"), "never")
-        self.assertEqual(captured.get("sandbox_mode"), "workspace-write")
+        self.assertEqual(captured.get("sandbox_mode"), EXPECTED_CODEX_AUTOMATION_SANDBOX)
 
     async def test_bridge_codex_chat_streams_text_and_done(self) -> None:
         session = _SessionRecord(
@@ -1789,7 +1795,7 @@ class BridgeCodexChatApiTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(payload["permission_mode"], "default")
         self.assertEqual(payload["approval_policy"], "never")
-        self.assertEqual(payload["sandbox_mode"], "workspace-write")
+        self.assertEqual(payload["sandbox_mode"], EXPECTED_CODEX_AUTOMATION_SANDBOX)
 
 
 class BridgeGitApiTest(unittest.IsolatedAsyncioTestCase):
@@ -1834,9 +1840,8 @@ class AgentProviderRouterTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             AgentProviderRouter.normalize_brand("copilot")
 
-    @patch("live2d_server.session_bridge_provider.platform.system", return_value="Windows")
-    def test_default_permission_mode_uses_full_for_codex_on_windows(self, _system: MagicMock) -> None:
-        self.assertEqual(AgentProviderRouter.default_permission_mode("codex"), "full")
+    def test_default_permission_mode_uses_full_auto_default_for_codex(self) -> None:
+        self.assertEqual(AgentProviderRouter.default_permission_mode("codex"), "default")
         self.assertEqual(AgentProviderRouter.default_permission_mode("claude"), "default")
 
     def test_supported_brands_expose_metadata_for_ui(self) -> None:
@@ -1846,14 +1851,15 @@ class AgentProviderRouterTest(unittest.TestCase):
         codex = next(item for item in payload["brands"] if item["brand"] == "codex")
         self.assertEqual(codex["display_name"], "Codex")
         self.assertTrue(codex["models"])
+        self.assertIn("gpt-5.5", codex["models"])
+        self.assertIn("gpt-5.4-mini", codex["models"])
         self.assertEqual(codex["badge_icon"], "/brand/codex-badge.svg")
 
-    @patch("live2d_server.session_bridge_provider.platform.system", return_value="Windows")
-    def test_supported_brands_include_default_permission_mode(self, _system: MagicMock) -> None:
+    def test_supported_brands_include_default_permission_mode(self) -> None:
         payload = asyncio.run(bridge_agent_brands())
         codex = next(item for item in payload["brands"] if item["brand"] == "codex")
         claude = next(item for item in payload["brands"] if item["brand"] == "claude")
-        self.assertEqual(codex["default_permission_mode"], "full")
+        self.assertEqual(codex["default_permission_mode"], "default")
         self.assertEqual(claude["default_permission_mode"], "default")
 
 

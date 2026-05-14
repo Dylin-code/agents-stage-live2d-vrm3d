@@ -20,6 +20,7 @@ from typing import Any, Optional
 from .contracts.llm_port import ChatMessage, ChatModelPort, ToolCall
 from .contracts.tool_port import ToolContext, ToolPort
 from .conversation_store import ConversationStore
+from .persona import PersonaStore
 from .prompt_builder import ToolMode, build_system_prompt
 from .tool_call_parser import looks_like_tool_call_attempt, parse_tool_call
 from .shared import (
@@ -63,6 +64,7 @@ class MasterAgentService:
         tool_registry: InMemoryToolRegistry,
         task_tracker: Optional[SubTaskTracker] = None,
         conversation_store: Optional[ConversationStore] = None,
+        persona_store: Optional[PersonaStore] = None,
         tool_mode: ToolMode = "native",
     ) -> None:
         self._chat_model = chat_model
@@ -72,6 +74,7 @@ class MasterAgentService:
         self._orchestrator = ToolOrchestrator(tool_registry)
         self._task_tracker = task_tracker or SubTaskTracker()
         self._store = conversation_store or ConversationStore()
+        self._persona_store = persona_store
         self._tool_mode: ToolMode = tool_mode
         self._abort_events: dict[str, asyncio.Event] = {}
 
@@ -90,6 +93,10 @@ class MasterAgentService:
     @property
     def conversation_store(self) -> ConversationStore:
         return self._store
+
+    @property
+    def persona_store(self) -> Optional[PersonaStore]:
+        return self._persona_store
 
     @property
     def tool_registry(self) -> InMemoryToolRegistry:
@@ -165,6 +172,10 @@ class MasterAgentService:
         # `{"tool": ..., "args": {...}}` JSON which we parse with
         # :func:`parse_tool_call`.
         native_tools = tool_schemas if self._tool_mode == "native" else ()
+        # Persona is fetched once per run rather than per-hop: hot-reload
+        # mid-conversation is rare and a stable system prompt across hops
+        # plays better with provider prompt caching.
+        persona = await self._persona_store.get() if self._persona_store is not None else None
 
         for hop in range(_MAX_HOPS):
             if abort_event.is_set():
@@ -176,6 +187,7 @@ class MasterAgentService:
                 subtasks=subtasks,
                 tool_mode=self._tool_mode,
                 tools=tool_schemas if self._tool_mode == "prompt" else (),
+                persona=persona,
             )
             llm_messages = _conversation_to_llm_messages(conversation)
 

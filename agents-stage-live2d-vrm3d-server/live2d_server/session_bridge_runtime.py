@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import os.path
+import posixpath
 import subprocess
 import time
 from pathlib import Path
@@ -793,7 +794,10 @@ class SessionBridgeService:
         if cwd_candidates:
             cwd = cwd_candidates[0]
             try:
-                cwd = os.path.commonpath(cwd_candidates)
+                if all(candidate.startswith("/") for candidate in cwd_candidates):
+                    cwd = posixpath.commonpath(cwd_candidates)
+                else:
+                    cwd = os.path.commonpath(cwd_candidates)
             except ValueError:
                 cwd = cwd_candidates[0]
 
@@ -1738,7 +1742,10 @@ class SessionBridgeService:
                     session.last_state_change_mono = time.monotonic()
                     session.pending_state = None
                     session.pending_due_mono = 0.0
-                    session.idle_due_epoch = None
+                    if top_type == "item.completed":
+                        session.idle_due_epoch = session.last_seen_epoch + self.idle_after_task_complete_sec
+                    else:
+                        session.idle_due_epoch = None
                     emitted_event = self._build_state_event(session)
                 else:
                     session.idle_due_epoch = session.last_seen_epoch + self.idle_after_task_complete_sec

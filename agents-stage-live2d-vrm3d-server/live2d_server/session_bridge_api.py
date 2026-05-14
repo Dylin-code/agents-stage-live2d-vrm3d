@@ -587,6 +587,8 @@ def _resolve_permission_settings_for_brand(
 
 def _coerce_permission_mode_for_brand(brand: str, permission_mode: Optional[str]) -> Optional[str]:
     normalized = str(permission_mode or "").strip().lower()
+    if brand == AGENT_BRAND_CODEX and not normalized:
+        return PERMISSION_MODE_DEFAULT
     if brand == AGENT_BRAND_CODEX and AgentProviderRouter.default_permission_mode(brand) == "full":
         if not normalized or normalized == PERMISSION_MODE_DEFAULT:
             return "full"

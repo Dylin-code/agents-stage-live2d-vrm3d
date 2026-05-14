@@ -89,8 +89,7 @@ export function createSessionStageChatAgentUtils(args: {
   function buildSessionAgentOptions(session?: SessionSnapshotItem): SessionAgentUiOptions {
     const context = session?.context || {}
     const brand = (session?.agent_brand || 'codex').toLowerCase()
-    const permissionMode = String(context.permission_mode || '').trim()
-      || (String(context.sandbox_mode || '').trim() === 'danger-full-access' ? 'full' : 'default')
+    const permissionMode = String(context.permission_mode || '').trim() || 'default'
     return {
       model: context.model || '',
       reasoning_effort: context.effort || '',
@@ -126,9 +125,7 @@ export function createSessionStageChatAgentUtils(args: {
     }
     current.model = context.model || current.model || ''
     current.reasoning_effort = context.effort || current.reasoning_effort || ''
-    current.permission_mode = String(context.permission_mode || '').trim()
-      || (String(context.sandbox_mode || '').trim() === 'danger-full-access' ? 'full' : 'default')
-      || current.permission_mode
+    current.permission_mode = String(context.permission_mode || '').trim() || current.permission_mode || 'default'
     if (current.plan_mode === undefined || current.plan_mode === null) {
       current.plan_mode = context.plan_mode === true
     }
