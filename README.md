@@ -150,108 +150,122 @@
 **Terminator**
 - `report_to_user(text)` — 結束本回合，把 text 顯示給使用者
 
-## 重要更新：總控 Agent 角色設定 / 「導演」預設（2026-05-14）
+## 重要更新：導演（總控 Agent 角色設定）（2026-05-15）
 
-把總控從純工具升級為**有角色感的舞台導演**。預設名稱為「導演」，會以鏡頭調度的視角描述任務；使用者可在前端「🎭 角色設定」面板隨時換名、改說話風格、套用內建預設，或關掉角色回到純工具模式。
+總控 Agent 預設換上「**導演**」這個角色——以舞台導演的視角接收需求、調度 codex 與 claude 工人。使用者可以隨時改名、換口吻、套用內建預設，或關掉角色回到純工具模式。
 
-### 設計重點
+工具呼叫的決策與參數**不會**被角色影響；角色只改變導演對你說的話。
 
-- **Persona 只影響 user-facing 文字**（`report_to_user` 的 text、`final_text`）；工具呼叫的 JSON / 參數**完全不被人設影響**，prompt builder 明確在 persona block 加了這條 wall。
-- **跨 hop 穩定**：persona 一次對話讀一次，不每 hop 重讀，配合 prompt cache 較友善。
-- **`enabled=False` = byte-identical legacy prompt**：純工具模式下 persona section 完全 skip，等於沒人設前的行為。
-- **持久化**：寫入 `config/master-agent/persona.json`（atomic write），server 重啟保留設定；該檔已加進 `.gitignore`。
+### 內建角色（一鍵套用，可再編輯）
 
-### 內建預設（一鍵套用 + 可再編輯）
-
-| id | display_name | 風格 |
+| 預設 | 顯示名稱 | 風格 |
 |---|---|---|
-| `director`（預設） | 導演 | 沉穩、鏡頭感，用「下一個鏡頭」「場記開始──」這類舞台語言 |
+| `director`（出廠預設） | 導演 | 沉穩、鏡頭感，用「下一個鏡頭」「場記開始──」這類舞台語言 |
 | `calm-assistant` | 助理 | 冷靜、極簡、條列，先講結論 |
-| `fellow-coder` | 阿凱 | 熱血工程師夥伴，輕鬆口語但派工指令精準 |
-| `tool-only` | 總控 Agent | `enabled=false`，回到純工具模式 |
+| `fellow-coder` | 阿凱 | 熱血工程師夥伴，輕鬆口語，但派工指令精準 |
+| `tool-only` | 導演 | 純工具模式：保留「導演」這個名字但完全不注入角色語氣 |
 
-### PersonaConfig 欄位
+### 可自訂欄位
+
+在前端 `/master-agent` 頁面標題的「🎭 導演」chip 點下去就會開啟角色設定面板：
 
 | 欄位 | 用途 |
 |---|---|
-| `enabled` | 關閉 = persona 完全不注入 prompt |
-| `display_name` | LLM 自稱、TG `/whoami` / 前端 chip 顯示 |
-| `summary` | 一句話介紹（注入 prompt 開頭） |
-| `personality` | 性格特質列表，逗號 / 頓號分隔輸入 |
-| `speaking_style` | 自由文本，越具體越好（語氣詞、人稱代名詞、節奏） |
-| `catchphrase` | 開場語 / 口頭禪，prompt 提示「自然帶入，不必每則訊息都用」 |
-| `boundaries` | 不可碰的界線（不打破第四面牆、不假裝寫碼 …） |
+| `display_name` | 角色名稱，會顯示在前端標題、聊天輸入框、TG bot 自稱 |
+| `summary` | 一句話介紹角色 |
+| `personality` | 性格特質（逗號 / 頓號分隔） |
+| `speaking_style` | 自由文本：語氣詞、人稱代名詞、節奏，越具體越好 |
+| `catchphrase` | 開場語 / 口頭禪（選填，自然帶入即可） |
+| `boundaries` | 角色不可碰的界線（例如「不假裝親自寫程式碼」） |
+| `enabled` | 關閉 = 角色完全不注入 LLM，回到純工具口吻；名字仍然保留 |
 
-### 新增 API
+設定寫入 `config/master-agent/persona.json`，伺服器重啟保留。改名後**前端與 TG bot 同步生效**，毋需重啟。
 
-- `GET /api/master-agent/persona` — 回 `{persona, presets}`
-- `PUT /api/master-agent/persona` — 全量替換 PersonaConfig
+### API
+
+- `GET /api/master-agent/persona` — 取得目前角色與內建預設清單
+- `PUT /api/master-agent/persona` — 全量覆寫角色設定
 - `POST /api/master-agent/persona/reset` — 重置為預設「導演」
 - `POST /api/master-agent/persona/apply-preset` — body `{preset_id}`，套用內建預設
 
-### 前端入口
+## 重要更新：Telegram 整合（2026-05-15）
 
-`/master-agent` topbar 標題旁新增「🎭 <display_name>」chip：
+把導演接到 Telegram 私訊，**離開電腦也能派工**。Bot 以長輪詢（long polling）取得訊息，後端只做 outbound 連線到 `api.telegram.org`——不必開放公網 webhook、不必把伺服器暴露到外網。
 
-- 點擊 → 開啟角色設定面板（preset 下拉、欄位編輯、啟用 toggle、重置）
-- 顯示「🎭 純工具」chip + 灰色樣式 = 目前是 `enabled=false`
+### 啟用步驟
 
-## 重要更新：總控 Agent Telegram 整合（2026-05-14）
+1. 用 [@BotFather](https://t.me/BotFather) 申請 bot 並拿到 token
+2. 在後端 `.env` 設定：
 
-新增 Telegram bot 整合，可在不開放公網 webhook 的前提下，從 TG 私訊操作總控 Agent。Bot 以**長輪詢（long polling）**方式取得訊息，後端只需要 outbound 連線到 `api.telegram.org`，不必把伺服器暴露到外網。
+   ```env
+   TELEGRAM_BOT_TOKEN=<your-token>
+   # 選填，前端會用來顯示直連 https://t.me/<username>
+   TELEGRAM_BOT_USERNAME=<your-bot-username>
+   # 強烈建議：白名單，避免陌生人嘗試綁定
+   TELEGRAM_ALLOWED_USERS=<your-numeric-tg-user-id>
+   ```
+
+3. 重啟伺服器，啟動 log 看到 `telegram bot polling started` 即可
+
+不知道自己的 TG `user_id`？私訊你的 bot 輸入 `/whoami`，它會回給你（這個指令不過白名單，避免把自己鎖在外面）。
 
 ### 綁定流程
 
-1. 在後端 `.env` 設定 `TELEGRAM_BOT_TOKEN`（從 [@BotFather](https://t.me/BotFather) 取得）後重啟伺服器，啟動 log 會看到 `telegram bot polling started`
-2. 開啟前端 `/master-agent`，點 topbar 的「綁定 Telegram」→ 產生 6 位數綁定碼（TTL 10 分鐘，一次性）
-3. 到 Telegram 私訊你的 bot，輸入 `/bind 123456`
-4. 看到「✅ 已綁定！」後，之後在 TG 直接傳訊息就會派工給總控
+1. 開啟前端 `/master-agent`，點 topbar 的「綁定 Telegram」
+2. 取得 6 位數綁定碼（一次性，10 分鐘 TTL）
+3. 私訊 bot 輸入 `/bind 123456`
+4. 看到「✅ 已綁定！」之後，之後 TG 純文字訊息會直接派給導演
 
 ### Bot 指令
 
 | 指令 | 說明 |
 |---|---|
-| `/start` 或 `/help` | 顯示說明 |
-| `/bind <code>` | 用網頁端產生的綁定碼綁定到一個對話容器 |
+| `/start` 或 `/help` | 顯示說明（會用你設定的角色名稱） |
+| `/bind <code>` | 用網頁端產生的綁定碼綁定到一個對話 |
 | `/unbind` | 解除綁定 |
-| `/new` | 開啟一段新的總控對話（保留綁定） |
+| `/new` | 開啟一段新對話（保留綁定） |
 | `/abort` | 中止當前進行中的任務 |
 | `/status` | 顯示綁定狀態與目前對話 ID |
-| `/whoami` | 顯示自己的 TG `user_id` / `chat_id`，用來設定 `TELEGRAM_ALLOWED_USERS` 白名單 |
-| 純文字訊息 | 直接派工給總控 Agent；同一個 chat 一次只能跑一個任務 |
+| `/whoami` | 顯示自己的 TG `user_id` / `chat_id` |
+| 純文字訊息 | 直接派工給導演；同一個 chat 一次只能跑一個任務，需 `/abort` 才能插隊 |
 
-### SSE → Telegram 訊息折疊
+### 訊息呈現
 
-總控的 SSE 事件流（thinking_delta / tool_call_begin / tool_call_end / final_text / error）會被折疊成適合 TG 觀看的訊息：
+導演在內部會跑多步工具呼叫，呈現到 TG 上時會折疊成易讀格式：
 
-- `thinking_delta` 不送（避免被 TG rate limit），改為每回合送一次 typing indicator
-- `tool_call_begin` → 送一則「🔧 啟動 Codex 子任務…」短訊
-- `tool_call_end` → 把上一則 edit 成「✅ 啟動 Codex 子任務」或「❌ … — error」並附 300 字以內輸出 preview
-- `final_text` → 完整回覆；超過 3900 字會在換行處切塊分多則送
-- `error` / `hop_limit_reached` → 送一則錯誤通知訊息
+- 工具呼叫開始 → 「🔧 啟動 Codex 子任務…」短訊
+- 工具呼叫完成 → 同一則訊息 edit 為「✅ 啟動 Codex 子任務」或「❌ … — error」，附 300 字以內輸出 preview
+- 最終回覆 → 完整文字（超過 3900 字會在換行處切塊分多則送）
+- 思考片段 → 不送（避免被 TG rate limit），改為每回合送一次 typing indicator
 
 ### 環境變數
 
 | 變數 | 預設 | 說明 |
 |---|---|---|
-| `TELEGRAM_BOT_TOKEN` | — | BotFather 給的 token。**留空 = 整個整合 disable，啟動時跳過。** |
-| `TELEGRAM_ALLOWED_USERS` | — | 逗號分隔 TG numeric user id 白名單。留空 = 不限制（仍需綁定碼）；設定後只有清單內的 user 能 `/bind` |
+| `TELEGRAM_BOT_TOKEN` | — | BotFather 給的 token。**留空 = 整個整合 disable，啟動時跳過** |
+| `TELEGRAM_ALLOWED_USERS` | — | 逗號分隔 TG numeric user id 白名單。留空 = 不限制（仍需綁定碼） |
 | `TELEGRAM_BOT_USERNAME` | — | 選填，bot 帳號（不含 `@`）；前端用來顯示 `https://t.me/<username>` 直連 |
 | `TELEGRAM_BINDINGS_FILE` | `config/master-agent/telegram_bindings.json` | 綁定持久化檔位置 |
 | `TELEGRAM_BINDING_CODE_TTL_SECONDS` | `600` | 綁定碼有效秒數（最少 30） |
 
-### 新增 API 端點
+### API 端點
 
 - `GET /api/master-agent/telegram/status` — 回傳 `{enabled, running, bot_username, binding_count, binding_code_ttl_seconds}`
 - `POST /api/master-agent/telegram/binding-code` — 產生一次性綁定碼，回 `{code, expires_at, ttl_seconds, bot_username}`
 
-### 安全考量
+### 使用須知
+
+- **網頁與 TG 是兩條獨立的對話**：網頁的 `conversation_id` 存在 localStorage，TG 的存在 `telegram_bindings.json`。同一個導演會分別在兩條對話跟你互動，但訊息歷史不互通
+- **重啟伺服器不必重新綁定**：綁定持久化；只有「已產生但還沒用掉」的 6 位綁定碼會失效（這是刻意設計——短期 secret 不該倖存重啟）
+- **角色設定是 process-wide**：在前端改名後，下一則 TG 訊息就會用新名字
+- **只支援私訊**，所有指令在群組聊天中都不會生效
+
+### 安全
 
 - Bot 走 outbound polling，**不需要對外開 port**，比 webhook 模式安全
-- 綁定碼為 6 位數字 + 10 分鐘 TTL + 一次性消耗，不會持久化（重啟伺服器後碼立即作廢）
-- 綁定記錄存在 `config/master-agent/telegram_bindings.json`，包含 TG `chat_id` / `user_id` / `username`；備份時請當作 secret 處理
-- 建議搭配 `TELEGRAM_ALLOWED_USERS` 白名單，避免被未授權的 TG 帳號嘗試 `/bind`
-- 整合不支援群組聊天，所有指令都只在私訊（`filters.ChatType.PRIVATE`）生效
+- 綁定碼為 6 位數字 + TTL + 一次性消耗，不持久化
+- 綁定記錄含 TG `chat_id` / `user_id` / `username`，是 PII；`config/master-agent/` 整個目錄已在 `.gitignore` 內，但備份時仍請當作 secret 處理
+- 強烈建議設定 `TELEGRAM_ALLOWED_USERS` 白名單
 
 ## 補充（2026-03-24）
 
