@@ -23,6 +23,13 @@
         {{ switchButtonText }}
       </button>
       <button
+        class="stage-view-switch master-agent-link"
+        type="button"
+        @click="openMasterAgent"
+      >
+        總控 Agent
+      </button>
+      <button
         v-if="terminalEnabled"
         class="stage-view-switch"
         type="button"
@@ -693,6 +700,12 @@ function switchView(): void {
   void router.push(props.switchToPath)
 }
 
+function openMasterAgent(): void {
+  // No-op if we're already there (e.g. nested navigation).
+  if (route.path === '/master-agent') return
+  void router.push('/master-agent')
+}
+
 function handleSidebarSessionCardClick(session: SessionSnapshotItem): void {
   if (isPortraitMode.value) {
     navigatePortraitToSession(session.session_id)
@@ -896,6 +909,14 @@ canvas {
 
 .stage-view-switch:hover {
   background: rgba(17, 49, 82, 0.9);
+}
+
+.stage-view-switch.master-agent-link {
+  background: linear-gradient(135deg, #5e35b1, #1976d2);
+  border-color: rgba(180, 200, 255, 0.55);
+}
+.stage-view-switch.master-agent-link:hover {
+  background: linear-gradient(135deg, #6a3eb3, #1e80d6);
 }
 
 .session-sidebar {

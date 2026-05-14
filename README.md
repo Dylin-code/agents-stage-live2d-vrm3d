@@ -43,6 +43,169 @@
 > - **Remote 模式**：WebSocket 連線受現有 JWT 認證保護，僅已登入且在 email 白名單內的使用者可存取。但本質上仍是遠端 shell，請務必確保 HTTPS 傳輸加密、嚴格控管白名單，並避免在不受信任的網路環境下使用。
 > - 本功能不提供指令過濾或權限隔離機制，連線使用者擁有與後端執行身分相同的 shell 權限。
 
+## 重要更新：總控 Agent（2026-05-13）
+
+新增「總控 Agent」單一對口入口，前端只需跟總控對話，由總控自主決定何時派發任務給 codex 或 claude 工人，並追蹤子任務狀態。
+
+### 設計重點
+
+- **總控自身不直接操作系統**：所有 CLI 指令組裝與 subprocess 都仍由既有 `AgentProviderRouter` / `SessionBridgeService` 負責；總控只透過 ToolPort 抽象呼叫這些既有服務。
+- **非同步派發**：`*_send_prompt` 工具立即回傳 `subtask_id`，子任務在背景透過 `asyncio.create_task` 跑 `stream_prompt`，由 `SubTaskTracker` 追蹤狀態與透穿事件。
+- **多 LLM provider**：透過 env 切換 Anthropic API、OpenAI API、或本地 OpenAI-compatible（Ollama / LM Studio）。
+- **新頁面、新 API、不影響既有**：舊 `/api/session-bridge/*` 路由與 `/session-stage` 頁面完全保留。
+
+### 新增 API 路由（`/api/master-agent/*`）
+
+- `POST /conversation/new` — 建立主控對話
+- `POST /chat` — SSE，串流總控 hop 事件（thinking / tool_call_begin / tool_call_end / final_text / error）
+- `POST /abort` — 中止總控 LLM 迴圈
+- `GET  /snapshot?conversation_id=` — 主對話 + 子任務快照
+- `GET  /subtasks?conversation_id=` — 子任務列表
+- `GET  /subtasks/{id}` — 子任務詳情
+- `GET  /llm/info` — 目前啟用的 LLM provider / model
+- `WS   /ws` — 廣播 SubTask 狀態變動到所有 client（多 tab / 桌面 widget 同步），前端按 `conversation_id` 過濾、exponential backoff 重連
+
+### 前端入口
+
+`/master-agent` 為新獨立頁面，左側為總控對話 + 思考軌跡，右側為子任務卡片列表（顯示 brand、session、狀態、最新事件、final_text）。
+
+**RWD / 行動裝置**：頁面採 dark theme + radial gradient 底圖，沒有 Live2D 元素（純功能介面）。寬螢幕雙欄；手機（≤768px）切換為單欄聊天 + 任務列表收進右側 drawer，topbar 顯示「任務 (N)」按鈕展開。`100dvh` + `env(safe-area-inset-*)` 處理 iOS notch / Android 手勢列，輸入框字級 ≥16px 避免 iOS 自動 zoom。
+
+**對話持久化**：master agent 對話以 JSON 寫入 `config/master-agent/conversations/<conversation_id>.json`（env `MASTER_AGENT_CONVERSATION_DIR` 可改路徑）。每個 user message / hop 完成 / tool result 都 atomic write。Server 重啟後同 conversation_id 可從 disk hydrate 繼續聊。前端 localStorage 存 conversation_id，refresh 後自動接回；server 端找不到（手動刪檔）則自動建新對話。
+
+**派工確認 gate**：總控第一次要呼叫 `*_new_session` 前必須先 `report_to_user` 印出完整計畫（agent_brand / cwd / model / reasoning_effort / permission_mode / plan_mode / 預計 first prompt）讓使用者檢查 + 修改。使用者回 OK / 確認後下一回合才實際派出。Resume 既有 session、唯讀工具（query / list / browse / search）**不受**此 gate 規範。
+
+**Chat 快捷指令**：
+- `#new` — 開新對話（等同點「開新對話」按鈕）
+- `#new <text>` — 開新對話並把 `<text>` 當成第一句訊息送出
+- `#full` — 出現在訊息任何位置（會被剝離）→ 該回合允許 `permission_mode=full`（完全沒沙箱）。沒這關鍵字時，LLM 試圖用 `full` 會被自動降為 `auto`
+- 可組合：`#new #full do dangerous thing` = 開新對話 + 解鎖 full + 送出 `do dangerous thing`
+
+**權限策略（auto-review 預設、`full` gated）**：
+- Master agent 預設 `permission_mode=auto`：
+  - codex CLI 跑 `codex -a on-request exec -c 'approvals_reviewer="auto_review"' --sandbox workspace-write …` → 獨立 reviewer 子代理自動審核需 escalation 的命令
+  - claude CLI 跑 `claude -p --permission-mode auto …` → 走 claude 內建 auto classifier
+- LLM 明確指定 `permission_mode=plan` / `auto` → 照用
+- LLM 明確指定 `permission_mode=full` → **預設拒絕、降為 auto**；只有使用者訊息含 `#full` 時 API 端會帶 `permit_full_access=true`，這時 `full` 才被認可，CLI 才會掛 `--dangerously-bypass-approvals-and-sandbox` / `--dangerously-skip-permissions`
+
+### 環境變數
+
+| 變數 | 預設 | 說明 |
+|---|---|---|
+| `MASTER_AGENT_LLM_PROVIDER` | `anthropic` | `anthropic` / `openai` / `local` |
+| `MASTER_AGENT_LLM_MODEL` | provider-specific | 例 `claude-sonnet-4-6` / `gpt-4o-mini` / `qwen2.5:14b` |
+| `MASTER_AGENT_LLM_API_KEY` | — | Anthropic / OpenAI key；`local` 可省略 |
+| `MASTER_AGENT_LLM_BASE_URL` | — | local 模式必填，例 `http://localhost:11434/v1` |
+| `MASTER_AGENT_LLM_TOOL_MODE` | `auto` | `auto` / `native` / `prompt`；auto 時 local→prompt，其餘→native |
+
+### Tool mode 說明
+
+- **native**：用 provider 原生的 function calling（Anthropic `tools=` / OpenAI `tools=` 欄位）。Anthropic、OpenAI 正規模型穩定可用。
+- **prompt**：把工具規格塞進 system prompt，要求模型輸出 `{"tool": "name", "args": {...}}` JSON；由 `tool_call_parser.py` 解析。適用：
+  - 本地 vLLM / LM Studio 沒開 `--enable-auto-tool-choice`、或 model 沒對應 tool parser 時
+  - 雜牌 OpenAI-compatible endpoint
+  - 任何純文字 chat model
+- 每回合僅一次工具呼叫（連續派工要分多 hop，`MAX_HOPS=8`）。
+
+### 工具清單（13 個）
+
+**Session 派發（每回合一個）**
+- `codex_new_session` / `claude_new_session` — 在指定 cwd 開新 session
+- `codex_send_prompt` / `claude_send_prompt` — 非同步派任務，立即回 `subtask_id`
+
+**診斷（讀取，無副作用）**
+- `query_session_status(session_id? | subtask_id?)` — 查單一 session/subtask 狀態
+- `list_sessions(active_only?)` — 列出 bridge 中所有 session
+- `list_subtasks(status?)` — 列出本對話派出的子任務
+- `list_history_sessions(agent_brand?, cwd_substring?, limit?)` — 列出磁碟上的歷史 session（用來找要 resume 的 session_id）
+- `get_session_conversation(session_id, limit?)` — 讀某個 session 最近 N 條訊息
+- `search_sessions(query, agent_brand?, cwd_substring?, limit?)` — 用關鍵字 substring 掃 codex/claude session JSONL 內容，回傳命中行 snippet（用來模糊找「上次改 auth 那個 session」）
+- `list_available_models(agent_brand?)` — 查每個品牌支援的 model 清單與預設 permission_mode
+- `browse_directories(path?)` — 列指定路徑下的子目錄（同舞台 cwd picker 的後端），用來把「桌面的 my-repo」這種模糊描述解成絕對路徑；不給 path 回 drive roots / `/`，上限 200 entries
+
+**模型參數調整**：`*_new_session` 與 `*_send_prompt` 都接受 `model` / `reasoning_effort` (`minimal`/`low`/`medium`/`high`/`xhigh`) / `permission_mode` (`default`/`auto`/`plan`/`full`) / `plan_mode`。new_session 設的是 session 預設值；send_prompt 設的是該單回合 override。Windows 上 codex 預設 `permission_mode=full`（workspace-write sandbox 不支援）。
+
+**長任務 timeout**：
+
+- 總控 `wait_for_subtask` 預設 5 分鐘、上限 30 分鐘；env `MASTER_AGENT_WAIT_DEFAULT_SEC` / `MASTER_AGENT_WAIT_MAX_SEC` 可調。
+- Timeout 時會回傳 `partial_text`（已串流出來的內容），system prompt 指示總控可再次 `wait_for_subtask` 繼續等。
+- 底層 CLI 自己也有 idle/max timeout（預設 180s / 1800s），env 變數：`CODEX_CLI_IDLE_TIMEOUT_SEC`、`CODEX_CLI_MAX_TIMEOUT_SEC`、`CLAUDE_CLI_IDLE_TIMEOUT_SEC`、`CLAUDE_CLI_MAX_TIMEOUT_SEC`。Idle = subprocess 多久沒輸出就 kill；reasoning model 跑久的話建議 bump 到 300+。
+
+**斷線復原（detached status）**：
+
+當 master 與 worker 的 stream 死掉（idle timeout、parser error、subprocess hang）但 bridge_service 的 disk scan 顯示 session JSONL 在最近 60 秒仍有事件，subtask 不會被標 `failed`，而是改標**`detached`**（terminal）。`wait_for_subtask` 看到 detached 時會明示總控用 `query_session_status(session_id=...)` 走 disk-backed 路徑追蹤後續、或用 `*_send_prompt` 同 session 接續對話。這條 fallback 走的是 `_scan_once_claude` / `_scan_once` 那條 disk truth 軌道，跟原本 `/session-stage` 看到的是同一份資料。
+
+**Resume**：沒有專屬 `resume_*` 工具 — `codex_send_prompt` / `claude_send_prompt` 對歷史 session_id 自動續聊（CLI 內建 `resume`）。流程：`list_history_sessions` → 挑 session_id → 可選 `get_session_conversation` 看上下文 → `*_send_prompt` 帶該 session_id 派新 prompt。
+
+**等待 / 控制平面**
+- `wait_for_subtask(subtask_id, timeout_sec=60)` — 阻塞至子任務 done/failed/aborted 或 timeout，把進度事件透穿到主 SSE
+- `abort_session(session_id, agent_brand)` — 強殺 codex/claude subprocess
+- `approve_pending(pending_id, decision, agent_brand, prefix_rule?)` — 處理 worker 的 `approval_request`
+
+**Git**
+- `list_branches(cwd?)` — 列分支 + 當前分支
+- `switch_git_branch(branch, cwd?)` — 切分支（先 `git switch`，舊版 git fallback `git checkout`）
+
+**Terminator**
+- `report_to_user(text)` — 結束本回合，把 text 顯示給使用者
+
+## 重要更新：總控 Agent Telegram 整合（2026-05-14）
+
+新增 Telegram bot 整合，可在不開放公網 webhook 的前提下，從 TG 私訊操作總控 Agent。Bot 以**長輪詢（long polling）**方式取得訊息，後端只需要 outbound 連線到 `api.telegram.org`，不必把伺服器暴露到外網。
+
+### 綁定流程
+
+1. 在後端 `.env` 設定 `TELEGRAM_BOT_TOKEN`（從 [@BotFather](https://t.me/BotFather) 取得）後重啟伺服器，啟動 log 會看到 `telegram bot polling started`
+2. 開啟前端 `/master-agent`，點 topbar 的「綁定 Telegram」→ 產生 6 位數綁定碼（TTL 10 分鐘，一次性）
+3. 到 Telegram 私訊你的 bot，輸入 `/bind 123456`
+4. 看到「✅ 已綁定！」後，之後在 TG 直接傳訊息就會派工給總控
+
+### Bot 指令
+
+| 指令 | 說明 |
+|---|---|
+| `/start` 或 `/help` | 顯示說明 |
+| `/bind <code>` | 用網頁端產生的綁定碼綁定到一個對話容器 |
+| `/unbind` | 解除綁定 |
+| `/new` | 開啟一段新的總控對話（保留綁定） |
+| `/abort` | 中止當前進行中的任務 |
+| `/status` | 顯示綁定狀態與目前對話 ID |
+| `/whoami` | 顯示自己的 TG `user_id` / `chat_id`，用來設定 `TELEGRAM_ALLOWED_USERS` 白名單 |
+| 純文字訊息 | 直接派工給總控 Agent；同一個 chat 一次只能跑一個任務 |
+
+### SSE → Telegram 訊息折疊
+
+總控的 SSE 事件流（thinking_delta / tool_call_begin / tool_call_end / final_text / error）會被折疊成適合 TG 觀看的訊息：
+
+- `thinking_delta` 不送（避免被 TG rate limit），改為每回合送一次 typing indicator
+- `tool_call_begin` → 送一則「🔧 啟動 Codex 子任務…」短訊
+- `tool_call_end` → 把上一則 edit 成「✅ 啟動 Codex 子任務」或「❌ … — error」並附 300 字以內輸出 preview
+- `final_text` → 完整回覆；超過 3900 字會在換行處切塊分多則送
+- `error` / `hop_limit_reached` → 送一則錯誤通知訊息
+
+### 環境變數
+
+| 變數 | 預設 | 說明 |
+|---|---|---|
+| `TELEGRAM_BOT_TOKEN` | — | BotFather 給的 token。**留空 = 整個整合 disable，啟動時跳過。** |
+| `TELEGRAM_ALLOWED_USERS` | — | 逗號分隔 TG numeric user id 白名單。留空 = 不限制（仍需綁定碼）；設定後只有清單內的 user 能 `/bind` |
+| `TELEGRAM_BOT_USERNAME` | — | 選填，bot 帳號（不含 `@`）；前端用來顯示 `https://t.me/<username>` 直連 |
+| `TELEGRAM_BINDINGS_FILE` | `config/master-agent/telegram_bindings.json` | 綁定持久化檔位置 |
+| `TELEGRAM_BINDING_CODE_TTL_SECONDS` | `600` | 綁定碼有效秒數（最少 30） |
+
+### 新增 API 端點
+
+- `GET /api/master-agent/telegram/status` — 回傳 `{enabled, running, bot_username, binding_count, binding_code_ttl_seconds}`
+- `POST /api/master-agent/telegram/binding-code` — 產生一次性綁定碼，回 `{code, expires_at, ttl_seconds, bot_username}`
+
+### 安全考量
+
+- Bot 走 outbound polling，**不需要對外開 port**，比 webhook 模式安全
+- 綁定碼為 6 位數字 + 10 分鐘 TTL + 一次性消耗，不會持久化（重啟伺服器後碼立即作廢）
+- 綁定記錄存在 `config/master-agent/telegram_bindings.json`，包含 TG `chat_id` / `user_id` / `username`；備份時請當作 secret 處理
+- 建議搭配 `TELEGRAM_ALLOWED_USERS` 白名單，避免被未授權的 TG 帳號嘗試 `/bind`
+- 整合不支援群組聊天，所有指令都只在私訊（`filters.ChatType.PRIVATE`）生效
+
 ## 補充（2026-03-24）
 
 - 已新增 session / 對話層級的「角色個性」功能，可在建立 session 或續聊時切換 persona
@@ -253,8 +416,8 @@ Electron 預設載入 `http://127.0.0.1:5173/desktop-widget`，視窗為透明�
 
 平台差異：
 
-- macOS：透明、無框、置頂、顯示於所有 workspace
-- Windows：無框、置頂，預設使用非透明背景以提升穩定度
+- macOS：透明、無框、置頂、顯示於所有 workspace，視窗可縮放
+- Windows：透明、無框、置頂，視窗尺寸固定不可縮放（Electron 在 Windows 上 `transparent: true` 與 `resizable: true` 並用會出現殘影/黑邊，因此鎖定固定尺寸換取穩定度）
 
 ## 使用方式
 
@@ -350,6 +513,34 @@ Electron 預設載入 `http://127.0.0.1:5173/desktop-widget`，視窗為透明�
 ## 更新紀錄
 
 以下依日期由新到舊排列。
+
+### 2026-05-09：對話強制中止按鈕（kill running CLI）
+
+過去訊息送出後，agent CLI（Codex / Claude Code）一定會跑到結束才能介入；遇到 agent 走偏（無限改檔、進入死巷）時只能等。新增「⏹ 強制中止」按鈕：
+
+- **後端**：`CodexSessionChatService` 與 `ClaudeSessionChatService` 新增 per-session 子程序註冊表（`_active_processes`），`stream_prompt` 啟動時 register、結束時 unregister；新增 `abort_session(session_id)`。
+- **kill 整個 process tree**（重要）：Claude / Codex 在執行任務時會 spawn sub-agent、MCP server、tool subprocess（npm / git / …），若只 `process.kill()` 父行程，子孫程序會變孤兒繼續跑（這就是 v1 按鈕「按了沒反應」的根因）。改為：
+  - spawn 時加入 `_isolated_subprocess_kwargs()` — POSIX 用 `start_new_session=True`，Windows 用 `creationflags=CREATE_NEW_PROCESS_GROUP`，把整個任務隔離到新 session / process group。
+  - abort / timeout / approval-deny 時改用 `_kill_process_tree(process)` — POSIX 走 `os.killpg(SIGKILL)`，Windows 走 `taskkill /F /T`，把整棵樹殺乾淨。
+- **新端點**：`POST /api/session-bridge/agent/chat/abort`，body `{ session_id, agent_brand? }`。未指定 brand 時會輪詢已註冊的 provider，誰持有該 session 的 process 就由誰中止。
+- **前端**：`chat.vue` 對每次 `fetchEventData` 建立 `AbortController`，「正在思考...」旁邊顯示紅色「⏹ 強制中止」按鈕；按下後先 await abort API 等後端把 process tree 殺乾淨，再 abort 本地 SSE，並在訊息列加入「⏹ 已中止當前任務。」。
+- **新 API 函式**：`abortAgentSession(serverUrl, { session_id, agent_brand })` in `src/utils/api/sessionBridge.ts`。
+- 後端補 17 條 unittest（kill_process_tree 跨平台行為、abort_session、API 路由、process group 隔離），前端補 3 條 vitest。
+
+### 2026-05-09：前端操作狀態本地快取
+
+針對手機/桌面端切到背景或重整頁面後「整個刷新」的問題，前端新增 UI 操作狀態本地快取：
+
+- **聊天輸入草稿**：在對話視窗輸入到一半時，依 conversation key 自動寫入 `localStorage`（debounced 220ms），切到背景或重整回來都能還原；訊息成功送出後自動清除該 key 的草稿。草稿帶 7 天 TTL，避免無限膨脹。
+- **目前打開的 chat session**：`selectedChatSessionId` 與 `chatModalVisible` 寫入 `live2d-viewer-chat-ui-state`，重新整理頁面後若該 session 仍存在會自動重新打開。
+- **Agent 設定**：每個 session 的 model / reasoning / permission_mode / persona / plan_mode 等寫入 `live2d-viewer-session-agent-options`，重整後維持上次的設定值。
+- 統一封裝在 `src/utils/uiStateCache.ts`，附 16 條 vitest 單元測試覆蓋讀寫、TTL、debounce 與例外情境。
+
+### 2026-04-27：Desktop Widget Windows 透明背景
+
+- Windows 上的 Electron desktop widget 改為與 macOS 一致的透明、無框、置頂呈現
+- 為避開 Electron 在 Windows 上「透明 + 可縮放」並用會出現殘影/黑邊的限制，Windows 視窗鎖定為固定尺寸（`resizable: false`）
+- macOS 行為不變
 
 ### 2026-03-24：角色個性功能與 VRM 表情調查
 

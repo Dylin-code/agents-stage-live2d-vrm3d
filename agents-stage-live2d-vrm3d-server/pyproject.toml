@@ -39,6 +39,7 @@ dependencies = [
     "fastapi-sso>=0.16.0",
     "webdriver-manager>=4.0.2",
     "pywinpty>=3.0.3",
+    "python-telegram-bot[ext]>=21.0",
 ]
 
 [dependency-groups]

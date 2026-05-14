@@ -20,6 +20,8 @@ from live2d_server.configuration import Config, RemoteConfig
 from live2d_server.live2d_motion_mapping import start_live2d_motion_mapping_warmup
 from live2d_server.rag.router import router as rag_router
 from live2d_server.router import router, start_live2d_preview_warmup
+from live2d_server.master_agent import master_agent_router
+from live2d_server.master_agent.telegram import start_telegram_bot, stop_telegram_bot
 from live2d_server.session_bridge import router as session_bridge_router
 from live2d_server.session_bridge import start_session_bridge, stop_session_bridge
 from live2d_server.web_terminal import router as terminal_router
@@ -55,6 +57,7 @@ async def lifespan(app: FastAPI):
     app.include_router(router)
     app.include_router(rag_router)
     app.include_router(session_bridge_router)
+    app.include_router(master_agent_router)
     app.include_router(terminal_router)
 
     # Remote mode: mount auth router
@@ -65,11 +68,17 @@ async def lifespan(app: FastAPI):
     await start_session_bridge()
     start_live2d_preview_warmup()
     start_live2d_motion_mapping_warmup()
+    # Telegram bot is opt-in via env (TELEGRAM_BOT_TOKEN). The runtime
+    # imports the master-agent service lazily so we avoid pulling LLM
+    # env into module import time.
+    from live2d_server.master_agent.api import _get_service as _get_master_service
+    await start_telegram_bot(_get_master_service)
     if static_path:
         app.mount("/", SPAStaticFiles(directory=static_path, html=True), name="static")
     try:
         yield
     finally:
+        await stop_telegram_bot()
         await stop_session_bridge()
 
 

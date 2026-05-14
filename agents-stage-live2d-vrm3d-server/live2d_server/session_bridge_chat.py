@@ -14,11 +14,14 @@ from pathlib import Path
 from typing import Any, AsyncGenerator, Optional
 
 from .session_bridge_shared import (
+    PERMISSION_MODE_AUTO,
     PERMISSION_MODE_DEFAULT,
     PERMISSION_MODE_FULL,
     _build_session_bridge_prompt,
     _ensure_stream_reader_limit,
     _extract_message_content,
+    _isolated_subprocess_kwargs,
+    _kill_process_tree,
     _resolve_default_chat_cwd,
     _resolve_permission_mode,
 )
@@ -45,8 +48,17 @@ def _resolve_codex_exec_permission_settings(
     )
     if effective_mode == PERMISSION_MODE_FULL:
         return effective_mode, "never", "danger-full-access"
-    # codex exec 0.120.0 does not accept -a/--ask-for-approval.
-    # The closest accurate runtime description is writable workspace + never ask.
+    if effective_mode == PERMISSION_MODE_AUTO:
+        # Codex auto-review: the model is allowed to *ask* for approval
+        # (``-a on-request``), and the configured reviewer
+        # (``approvals_reviewer = "auto_review"``) decides automatically
+        # whether each escalated request is safe. Sandbox stays at
+        # workspace-write so day-to-day edits don't need approval at all.
+        return effective_mode, "on-request", "workspace-write"
+    # default / plan / unknown → workspace-write + never-ask. codex exec
+    # only accepts ``-a/--ask-for-approval`` at the top level, never on
+    # ``exec`` itself, so the equivalent for non-interactive runs is the
+    # ``--full-auto`` convenience flag the caller injects below.
     return effective_mode, "never", "workspace-write"
 
 
@@ -102,6 +114,11 @@ class CodexSessionChatService:
         self._pending_approvals_lock = asyncio.Lock()
         self._approved_prefix_rules: set[tuple[str, ...]] = set()
         self._approved_prefix_rules_lock = asyncio.Lock()
+        # Per-session active subprocess registry. Used by abort_session() to forcibly kill
+        # a running CLI when the user pressed the "強制中止" button. Only one active stream
+        # per session_id is expected at any moment, so a plain dict keyed by session_id is enough.
+        self._active_processes: dict[str, asyncio.subprocess.Process] = {}
+        self._active_processes_lock = asyncio.Lock()
         logger.info(
             "Initialized CodexSessionChatService idle_timeout=%.1f max_timeout=%.1f approval_timeout=%.1f default_cwd=%s",
             self.idle_timeout_sec,
@@ -109,6 +126,46 @@ class CodexSessionChatService:
             self.approval_timeout_sec,
             self.default_cwd,
         )
+
+    async def _register_active_process(
+        self, session_id: str, process: asyncio.subprocess.Process
+    ) -> None:
+        async with self._active_processes_lock:
+            previous = self._active_processes.get(session_id)
+            self._active_processes[session_id] = process
+        if previous is not None and previous is not process and previous.returncode is None:
+            try:
+                previous.kill()
+            except ProcessLookupError:
+                pass
+
+    async def _unregister_active_process(
+        self, session_id: str, process: asyncio.subprocess.Process
+    ) -> None:
+        async with self._active_processes_lock:
+            current = self._active_processes.get(session_id)
+            if current is process:
+                self._active_processes.pop(session_id, None)
+
+    async def abort_session(self, session_id: str) -> bool:
+        """Force-kill the in-flight Codex CLI subprocess for the given session.
+
+        Returns True when a process was found and a kill signal was issued; False otherwise.
+        Safe to call when no process is running (returns False).
+        """
+        key = (session_id or "").strip()
+        if not key:
+            return False
+        async with self._active_processes_lock:
+            process = self._active_processes.get(key)
+        if process is None or process.returncode is not None:
+            return False
+        try:
+            _kill_process_tree(process)
+        except ProcessLookupError:
+            return False
+        logger.info("Codex stream aborted by user session=%s pid=%s", key, process.pid)
+        return True
 
     @staticmethod
     def _build_codex_subprocess_env() -> dict[str, str]:
@@ -141,13 +198,25 @@ class CodexSessionChatService:
         cmd: list[str] = [self.codex_bin]
         if cwd:
             cmd.extend(["-C", cwd])
-        self._append_permission_mode_args(
+        # ``-a on-request`` is a top-level codex flag (auto mode only);
+        # it MUST precede the ``exec`` subcommand.
+        self._append_codex_top_level_permission_args(
             cmd,
             permission_mode=permission_mode,
             approval_policy=approval_policy,
             sandbox_mode=sandbox_mode,
         )
         cmd.append("exec")
+        # ``--full-auto`` / ``--dangerously-bypass-approvals-and-sandbox``
+        # / ``--sandbox`` + ``-c approvals_reviewer=...`` are subcommand
+        # flags of ``exec``; newer codex CLI rejects them as top-level
+        # flags ("tip: 'exec --full-auto' exists").
+        self._append_codex_exec_permission_args(
+            cmd,
+            permission_mode=permission_mode,
+            approval_policy=approval_policy,
+            sandbox_mode=sandbox_mode,
+        )
         if model:
             cmd.extend(["-m", model])
         if reasoning_effort:
@@ -159,13 +228,35 @@ class CodexSessionChatService:
         return cmd
 
     @staticmethod
-    def _append_permission_mode_args(
+    def _append_codex_top_level_permission_args(
         cmd: list[str],
         *,
         permission_mode: Optional[str],
         approval_policy: Optional[str],
         sandbox_mode: Optional[str],
     ) -> None:
+        """Flags that MUST sit before the ``exec`` subcommand.
+
+        Currently only ``auto`` mode needs one (``-a on-request``); the
+        other modes have no top-level requirement.
+        """
+        effective_mode, _, _ = _resolve_codex_exec_permission_settings(
+            permission_mode=permission_mode,
+            approval_policy=approval_policy,
+            sandbox_mode=sandbox_mode,
+        )
+        if effective_mode == PERMISSION_MODE_AUTO:
+            cmd.extend(["-a", "on-request"])
+
+    @staticmethod
+    def _append_codex_exec_permission_args(
+        cmd: list[str],
+        *,
+        permission_mode: Optional[str],
+        approval_policy: Optional[str],
+        sandbox_mode: Optional[str],
+    ) -> None:
+        """Flags applied AFTER the ``exec`` subcommand keyword."""
         effective_mode, _, _ = _resolve_codex_exec_permission_settings(
             permission_mode=permission_mode,
             approval_policy=approval_policy,
@@ -173,8 +264,37 @@ class CodexSessionChatService:
         )
         if effective_mode == PERMISSION_MODE_FULL:
             cmd.append("--dangerously-bypass-approvals-and-sandbox")
-        else:
-            cmd.append("--full-auto")
+            return
+        if effective_mode == PERMISSION_MODE_AUTO:
+            # auto-review: tell exec to use workspace-write sandbox and
+            # delegate escalation decisions to the auto_review subagent.
+            cmd.extend([
+                "-c", 'approvals_reviewer="auto_review"',
+                "--sandbox", "workspace-write",
+            ])
+            return
+        # default / plan / unknown → --full-auto (= workspace-write + never-ask)
+        cmd.append("--full-auto")
+
+    # Backwards-compatible alias retained for any out-of-tree callers
+    # that may have imported the old function name. New code should use
+    # :meth:`_append_codex_exec_permission_args` paired with
+    # :meth:`_append_codex_top_level_permission_args`.
+    @classmethod
+    def _append_permission_mode_args(
+        cls,
+        cmd: list[str],
+        *,
+        permission_mode: Optional[str],
+        approval_policy: Optional[str],
+        sandbox_mode: Optional[str],
+    ) -> None:
+        cls._append_codex_exec_permission_args(
+            cmd,
+            permission_mode=permission_mode,
+            approval_policy=approval_policy,
+            sandbox_mode=sandbox_mode,
+        )
 
     def _suggest_prefix_rule(self, command: str) -> list[str]:
         if not command:
@@ -395,12 +515,14 @@ class CodexSessionChatService:
                 stderr=asyncio.subprocess.PIPE,
                 cwd=effective_cwd,
                 env=self._build_codex_subprocess_env(),
+                **_isolated_subprocess_kwargs(),
             )
             _ensure_stream_reader_limit(process.stdout)
         except FileNotFoundError as exc:
             await self._cleanup_images(created_images)
             raise CodexSessionChatError(f"codex cli not found: {self.codex_bin}") from exc
 
+        await self._register_active_process(session_id_value, process)
         start_mono = time.monotonic()
         last_activity_mono = start_mono
         event_count = 0
@@ -418,7 +540,7 @@ class CodexSessionChatService:
                         total_elapsed,
                         last_event_summary or "<none>",
                     )
-                    process.kill()
+                    _kill_process_tree(process)
                     await process.wait()
                     raise CodexSessionChatError("codex cli idle timeout")
                 if total_elapsed > self.max_timeout_sec:
@@ -428,7 +550,7 @@ class CodexSessionChatService:
                         total_elapsed,
                         last_event_summary or "<none>",
                     )
-                    process.kill()
+                    _kill_process_tree(process)
                     await process.wait()
                     raise CodexSessionChatError("codex cli max timeout")
                 if process.stdout is None:
@@ -528,14 +650,14 @@ class CodexSessionChatService:
                             result = await asyncio.wait_for(future, timeout=self.approval_timeout_sec)
                         except asyncio.TimeoutError:
                             await self._cleanup_pending_approval(pending_id)
-                            process.kill()
+                            _kill_process_tree(process)
                             await process.wait()
                             raise CodexSessionChatError("approval timeout")
                         finally:
                             await self._cleanup_pending_approval(pending_id)
                         decision = str((result or {}).get("decision") or "").strip()
                         if decision == "deny_once":
-                            process.kill()
+                            _kill_process_tree(process)
                             await process.wait()
                             yield {"type": "error", "content": "使用者拒絕本次權限請求"}
                             return
@@ -577,14 +699,14 @@ class CodexSessionChatService:
                             result = await asyncio.wait_for(future, timeout=self.approval_timeout_sec)
                         except asyncio.TimeoutError:
                             await self._cleanup_pending_approval(pending_id)
-                            process.kill()
+                            _kill_process_tree(process)
                             await process.wait()
                             raise CodexSessionChatError("approval timeout")
                         finally:
                             await self._cleanup_pending_approval(pending_id)
                         decision = str((result or {}).get("decision") or "").strip()
                         if decision == "deny_once":
-                            process.kill()
+                            _kill_process_tree(process)
                             await process.wait()
                             yield {"type": "error", "content": "使用者拒絕本次權限請求"}
                             return
@@ -657,6 +779,7 @@ class CodexSessionChatService:
                 bool(stderr_text),
             )
         finally:
+            await self._unregister_active_process(session_id_value, process)
             await self._cleanup_images(created_images)
 
     async def run_prompt(
@@ -697,13 +820,21 @@ class CodexSessionChatService:
         cmd: list[str] = [self.codex_bin]
         if cwd_value:
             cmd.extend(["-C", cwd_value])
-        self._append_permission_mode_args(
+        # ``-a on-request`` (auto mode only) is a top-level codex flag.
+        self._append_codex_top_level_permission_args(
             cmd,
             permission_mode=permission_mode,
             approval_policy=approval_policy,
             sandbox_mode=sandbox_mode,
         )
         cmd.append("exec")
+        # Sandbox + bypass + reviewer config flags belong after ``exec``.
+        self._append_codex_exec_permission_args(
+            cmd,
+            permission_mode=permission_mode,
+            approval_policy=approval_policy,
+            sandbox_mode=sandbox_mode,
+        )
         if model:
             cmd.extend(["-m", model])
         if reasoning_effort:

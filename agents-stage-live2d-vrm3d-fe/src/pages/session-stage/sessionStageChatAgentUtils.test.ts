@@ -129,6 +129,50 @@ describe('sessionStageChatAgentUtils', () => {
     expect(chatConversation.value.key).toBe('s1')
   })
 
+  it('context model overrides cached model in syncSessionAgentOptionsFromSnapshot', () => {
+    const sessionAgentOptionsBySession: Record<string, any> = {
+      s1: { model: 'haiku', reasoning_effort: 'low', permission_mode: 'default' },
+    }
+    const sessionStore: Record<string, SessionSnapshotItem> = {
+      s1: {
+        ...createSession('s1', 'Session 1'),
+        context: { model: 'opus', effort: 'high', permission_mode: 'full' },
+      },
+    }
+
+    const utils = createSessionStageChatAgentUtils({
+      storageKeyConversations: 'test-conversations-model',
+      conversationLimit: 20,
+      conversationSyncDebounceMs: 0,
+      serverUrl: () => '',
+      sessionStore,
+      sessionAgentOptionsBySession,
+      selectedChatSessionId: ref(''),
+      chatModalVisible: ref(false),
+      chatConversation: ref<Conversation>({
+        key: '',
+        label: '',
+        messages: [],
+        createdAt: 0,
+        updatedAt: 0,
+        group: undefined,
+      }),
+      chatSystemSettings: ref<SystemSettings>({} as SystemSettings),
+      conversationSyncTimers: new Map<string, number>(),
+      conversationSyncRunning: new Set<string>(),
+      conversationSyncQueued: new Set<string>(),
+      ensureSessionVisible: () => {},
+      syncActorsWithVisibility: () => {},
+      getBrandModels: () => [],
+    })
+
+    utils.syncSessionAgentOptionsFromSnapshot(sessionStore.s1)
+
+    expect(sessionAgentOptionsBySession.s1.model).toBe('opus')
+    expect(sessionAgentOptionsBySession.s1.reasoning_effort).toBe('high')
+    expect(sessionAgentOptionsBySession.s1.permission_mode).toBe('full')
+  })
+
   it('hydrates persona fields from session context', () => {
     const sessionStore: Record<string, SessionSnapshotItem> = {
       s1: {

@@ -23,6 +23,11 @@ export const routes: RouteRecordRaw[] = [
     component: () => import('../pages/DesktopWidget.vue')
   },
   {
+    path: '/master-agent',
+    name: 'MasterAgent',
+    component: () => import('../pages/master-agent/MasterAgentPage.vue')
+  },
+  {
     path: '/login',
     name: 'Login',
     component: () => import('../pages/Login.vue')

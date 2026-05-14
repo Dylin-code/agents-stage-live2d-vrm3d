@@ -42,6 +42,14 @@ import {
 } from './live2dMotionUtils'
 import { shouldHydrateConversationForEvent } from './sessionStageConversationSync'
 import { usePortraitMode } from './usePortraitMode'
+import {
+  createDebouncedWriter,
+  loadChatUiState,
+  loadSessionAgentOptionsMap,
+  pruneStaleChatDrafts,
+  saveChatUiState,
+  saveSessionAgentOptionsMap,
+} from '../../utils/uiStateCache'
 
 Live2DModelCubism4.registerTicker(PIXI.Ticker)
 Live2DModelCubism2.registerTicker(PIXI.Ticker)
@@ -73,6 +81,7 @@ const BUBBLE_RESERVED_HEIGHT = 62
 const BUBBLE_TOP_MARGIN = 10
 const DOUBLE_CLICK_THRESHOLD_MS = 280
 const CONVERSATION_SYNC_DEBOUNCE_MS = 180
+const UI_STATE_CACHE_DEBOUNCE_MS = 250
 const rendererMode: SessionStageRenderer = options.renderer || 'live2d'
 const isLive2DRenderer = rendererMode === 'live2d'
 
@@ -524,6 +533,55 @@ const {
   },
   getBrandModels: (brand) => getAgentBrandModels(agentBrandCatalog.value, brand),
 })
+
+// === UI 狀態快取：把目前打開哪個 chat、agent 設定等等寫入 localStorage，
+// 讓手機切到背景或重整頁面回來時能還原原本的操作上下文 ===
+const chatUiStateWriter = createDebouncedWriter(() => {
+  saveChatUiState({
+    selectedChatSessionId: selectedChatSessionId.value || undefined,
+    chatModalVisible: chatModalVisible.value || undefined,
+  })
+}, UI_STATE_CACHE_DEBOUNCE_MS)
+
+const agentOptionsWriter = createDebouncedWriter(() => {
+  saveSessionAgentOptionsMap({ ...sessionAgentOptionsBySession })
+}, UI_STATE_CACHE_DEBOUNCE_MS)
+
+watch(
+  [selectedChatSessionId, chatModalVisible],
+  () => chatUiStateWriter.schedule(),
+)
+
+watch(
+  () => sessionAgentOptionsBySession,
+  () => agentOptionsWriter.schedule(),
+  { deep: true },
+)
+
+function restoreCachedAgentOptions(): void {
+  const cached = loadSessionAgentOptionsMap<SessionAgentUiOptions>()
+  for (const [sessionId, options] of Object.entries(cached)) {
+    if (sessionAgentOptionsBySession[sessionId]) continue
+    sessionAgentOptionsBySession[sessionId] = options
+  }
+}
+
+function restoreCachedChatUiState(): void {
+  const cached = loadChatUiState()
+  if (!cached.selectedChatSessionId || !cached.chatModalVisible) return
+  const sessionId = cached.selectedChatSessionId
+  if (!sessionStore[sessionId]) {
+    // 對應的 session 已經不在歷史中（被清掉或 server 那邊不認得），就把無效快取丟棄。
+    saveChatUiState({})
+    return
+  }
+  openSessionChat(sessionId, { forceSwitch: true })
+}
+
+function flushUiStateCacheWriters(): void {
+  chatUiStateWriter.flush()
+  agentOptionsWriter.flush()
+}
 
 const {
   loadSettings,
@@ -1006,11 +1064,19 @@ onMounted(async () => {
     stageCanvas.value.addEventListener('contextmenu', onCanvasContextMenu)
   }
 
+  // 先把上次離開時保存的 agent 設定撈進來，再去 fetch history；
+  // 後續 syncSessionAgentOptionsFromSnapshot 會以「現有值優先」的策略合併，所以不會被覆蓋。
+  restoreCachedAgentOptions()
+
   try {
     await refreshHistory()
   } catch (error) {
     console.error('Failed to fetch initial history', error)
   }
+
+  // history 載完後才能還原 chat panel：要確認對應 session 還存在於 sessionStore。
+  restoreCachedChatUiState()
+  pruneStaleChatDrafts()
 
   connectBridge()
   window.addEventListener('resize', onWindowResize)
@@ -1023,6 +1089,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   disposed = true
+  flushUiStateCacheWriters()
   clearReconnectTimer()
   if (ws) {
     try {

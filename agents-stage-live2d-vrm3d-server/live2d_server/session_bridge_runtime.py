@@ -1180,11 +1180,7 @@ class SessionBridgeService:
             return
 
         try:
-            current_paths = {
-                str(path): path
-                for path in self.session_dir.rglob("*.jsonl")
-                if path.is_file()
-            }
+            current_paths = await asyncio.to_thread(self._enumerate_jsonl_paths, self.session_dir)
         except PermissionError as exc:
             self.degraded_reason = f"scan:permission denied ({exc})"
             return
@@ -1193,7 +1189,11 @@ class SessionBridgeService:
         for key in removed_keys:
             self._files.pop(key, None)
 
-        for key, path in current_paths.items():
+        for _key, path in current_paths.items():
+            # Each ``_consume_file`` performs its sync file I/O in a worker
+            # thread (see :meth:`_read_codex_file_blocking`), so the event
+            # loop is free between files — HTTP handlers can interleave
+            # even when hundreds of session files need to be checked.
             try:
                 await self._consume_file(path)
             except (OSError, ValueError) as exc:
@@ -1206,11 +1206,7 @@ class SessionBridgeService:
         if not self.claude_session_dir.exists():
             return
         try:
-            current_paths = {
-                str(path): path
-                for path in self.claude_session_dir.rglob("*.jsonl")
-                if path.is_file()
-            }
+            current_paths = await asyncio.to_thread(self._enumerate_jsonl_paths, self.claude_session_dir)
         except PermissionError:
             return
 
@@ -1218,13 +1214,25 @@ class SessionBridgeService:
         for key in removed_keys:
             self._claude_files.pop(key, None)
 
-        for key, path in current_paths.items():
+        for _key, path in current_paths.items():
             try:
                 await self._consume_claude_file(path)
             except (OSError, ValueError) as exc:
                 logger.warning("Claude session bridge read failed: %s (%s)", path, exc)
 
         await self._idle_stale_claude_sessions()
+
+    @staticmethod
+    def _enumerate_jsonl_paths(root: Path) -> dict[str, Path]:
+        """Walk ``root`` for ``*.jsonl`` files. Runs on a worker thread
+        (via :func:`asyncio.to_thread`) so the rglob — which can stat
+        hundreds of files on Windows with AV scanning — doesn't block
+        the event loop."""
+        return {
+            str(path): path
+            for path in root.rglob("*.jsonl")
+            if path.is_file()
+        }
 
     async def _idle_stale_claude_sessions(self) -> None:
         """Force IDLE for Claude sessions stuck in a non-IDLE state with no recent events."""
@@ -1251,32 +1259,58 @@ class SessionBridgeService:
             await self._broadcast(event)
 
     async def _consume_claude_file(self, path: Path) -> None:
-        """Read incremental lines from a Claude session JSONL file."""
+        """Read incremental lines from a Claude session JSONL file.
+
+        The sync part — ``stat`` / ``open`` / ``read`` — runs in a worker
+        thread so the event loop stays free even when hundreds of files
+        are being scanned. Only the in-memory ingest (which mutates the
+        session map under an async lock) stays on the loop.
+
+        First encounter: only the file tail (up to ``initial_read_bytes``)
+        is consumed — mirrors the Codex ingest path.
+        """
+        lines, cursor = await asyncio.to_thread(self._read_claude_file_blocking, path)
+        for line in lines:
+            await self._ingest_claude_line(line, cursor)
+
+    def _read_claude_file_blocking(self, path: Path) -> tuple[list[str], "_FileCursor"]:
+        """Sync: collect new lines from a Claude JSONL file. Runs in a
+        worker thread via :func:`asyncio.to_thread`. Mutates
+        ``self._claude_files`` (dict access is GIL-safe) and the returned
+        cursor in place so the cursor's ``offset`` round-trips back to
+        the main loop without needing a separate write."""
         key = str(path)
         stat = path.stat()
         cursor = self._claude_files.get(key)
         if cursor is None:
-            # Extract session_id from filename (Claude names files as {uuid}.jsonl)
+            start_offset = max(stat.st_size - self.initial_read_bytes, 0)
             session_id_from_name = None
             matched = self._session_id_pattern.search(path.stem)
             if matched:
                 session_id_from_name = matched.group(0)
             cursor = _FileCursor(
                 path=path,
-                offset=0,
+                offset=start_offset,
                 inode=stat.st_ino,
                 session_id=session_id_from_name,
+                align_line_on_next_read=(start_offset > 0),
             )
             self._claude_files[key] = cursor
         elif cursor.inode != stat.st_ino or stat.st_size < cursor.offset:
             cursor.offset = 0
             cursor.inode = stat.st_ino
+            cursor.align_line_on_next_read = False
 
         with path.open("r", encoding="utf-8", errors="ignore") as f:
             f.seek(cursor.offset)
-            for line in f:
-                await self._ingest_claude_line(line, cursor)
+            if cursor.align_line_on_next_read:
+                # ``start_offset`` likely landed mid-line; drop the partial
+                # remainder so we don't ship half-JSON to the parser.
+                f.readline()
+                cursor.align_line_on_next_read = False
+            lines = list(f)
             cursor.offset = f.tell()
+        return lines, cursor
 
     async def _ingest_claude_line(self, line: str, cursor: _FileCursor) -> None:
         """Parse a single line from a Claude Code session JSONL file.
@@ -1490,6 +1524,18 @@ class SessionBridgeService:
             await self._broadcast(emitted_event)
 
     async def _consume_file(self, path: Path) -> None:
+        """Read new lines from a Codex session JSONL file.
+
+        Mirrors :meth:`_consume_claude_file`: sync I/O is offloaded to a
+        worker thread so the event loop stays free between files.
+        """
+        lines, cursor = await asyncio.to_thread(self._read_codex_file_blocking, path)
+        for line in lines:
+            await self._consume_line(line, cursor)
+
+    def _read_codex_file_blocking(self, path: Path) -> tuple[list[str], "_FileCursor"]:
+        """Sync: collect new lines from a Codex JSONL file. Runs in a
+        worker thread via :func:`asyncio.to_thread`."""
         key = str(path)
         stat = path.stat()
         cursor = self._files.get(key)
@@ -1517,9 +1563,9 @@ class SessionBridgeService:
             if cursor.align_line_on_next_read:
                 f.readline()
                 cursor.align_line_on_next_read = False
-            for line in f:
-                await self._consume_line(line, cursor)
+            lines = list(f)
             cursor.offset = f.tell()
+        return lines, cursor
 
     async def _consume_line(self, line: str, cursor: _FileCursor) -> None:
         text = line.strip()

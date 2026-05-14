@@ -1,7 +1,11 @@
 import asyncio
 import json
+import logging
 import os
 import re
+import signal
+import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -9,6 +13,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 from pydantic import BaseModel
+
+_logger = logging.getLogger(__name__)
 
 SESSION_STATES = {"IDLE", "THINKING", "TOOLING", "RESPONDING", "WAITING"}
 STATE_PRIORITY = {"IDLE": 0, "RESPONDING": 1, "THINKING": 2, "TOOLING": 3, "WAITING": 4}
@@ -68,6 +74,71 @@ _AUTO_INJECTED_MESSAGE_PREFIXES = (
     "warning: apply_patch was requested via",
 )
 SESSION_BRIDGE_PROMPT_SCHEMA = "session_bridge_user_input_v1"
+
+
+def _isolated_subprocess_kwargs() -> dict[str, Any]:
+    """Return create_subprocess_exec kwargs that isolate the child + descendants
+    into a new process group / session, so we can later kill the entire tree.
+
+    On POSIX: ``start_new_session=True`` makes the child a new session leader, so
+    every grandchild (Claude sub-agents, MCP servers, npm, git, …) inherits the
+    same group id and we can ``killpg`` them all at once.
+
+    On Windows: ``CREATE_NEW_PROCESS_GROUP`` lets us address the whole tree via
+    ``taskkill /F /T``. The flag does not change inheritance for stdio pipes.
+    """
+    if sys.platform == "win32":
+        return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+    return {"start_new_session": True}
+
+
+def _kill_process_tree(process: asyncio.subprocess.Process) -> None:
+    """Kill a subprocess **and every descendant it spawned**.
+
+    The naive ``process.kill()`` only delivers SIGKILL / TerminateProcess to the
+    immediate child. Agent CLIs (Claude Code, Codex) routinely launch sub-agents,
+    MCP servers, and tool subprocesses; those become orphans and keep running
+    after a single-process kill — which is exactly what the user observed when
+    the abort button "did nothing".
+
+    Pre-condition: the subprocess must have been spawned with the kwargs from
+    ``_isolated_subprocess_kwargs()``. Otherwise this still tries its best, but
+    on POSIX a non-leader process won't have its children in the same group.
+    """
+    if process.returncode is not None:
+        return
+    pid = process.pid
+    if sys.platform == "win32":
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                check=False,
+                capture_output=True,
+                timeout=5,
+            )
+            return
+        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            _logger.warning("taskkill failed pid=%s err=%r — falling back to process.kill()", pid, exc)
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            return
+
+    # signal.SIGKILL is POSIX-only; on Windows this branch is unreachable but
+    # the import-time evaluation must still succeed, so use getattr with a fallback.
+    sigkill = getattr(signal, "SIGKILL", 9)
+    try:
+        os.killpg(os.getpgid(pid), sigkill)
+        return
+    except ProcessLookupError:
+        return
+    except OSError as exc:
+        _logger.warning("killpg failed pid=%s err=%r — falling back to process.kill()", pid, exc)
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
 
 
 def _ensure_stream_reader_limit(
@@ -440,6 +511,11 @@ class AgentNewSessionRequest(BaseModel):
     persona_id: Optional[str] = None
     persona_name: Optional[str] = None
     persona_content: Optional[str] = None
+
+
+class AgentAbortRequest(BaseModel):
+    session_id: str
+    agent_brand: Optional[str] = None
 
 
 class GitBranchSwitchRequest(BaseModel):

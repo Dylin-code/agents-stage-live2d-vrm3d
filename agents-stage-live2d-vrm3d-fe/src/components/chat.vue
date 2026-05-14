@@ -119,6 +119,12 @@
               <span></span>
             </div>
             <span class="loading-text">正在思考...</span>
+            <button
+              type="button"
+              class="abort-button"
+              :disabled="aborting"
+              @click="handleAbortMessage"
+            >{{ aborting ? '中止中…' : '⏹ 強制中止' }}</button>
           </div>
         </div>
       </Flex>
@@ -166,10 +172,19 @@ import {
   resolveChatRequestPath,
 } from '../utils/chatRequestPath'
 import { DEFAULT_AGENT_BRANDS, getAgentBrandModels } from '../utils/agentBrands'
-import { submitAgentApproval } from '../utils/api/sessionBridge'
+import { abortAgentSession, submitAgentApproval } from '../utils/api/sessionBridge'
 import { resolveSelectedCharacterPersona, sanitizeCharacterPersonas } from '../utils/personas'
 import { markdownFileLinkPlugin, setupFilePathClickHandler } from '../utils/markdownFileLink'
+import {
+  clearChatDraft,
+  createDebouncedWriter,
+  loadChatDraft,
+  pruneStaleChatDrafts,
+  saveChatDraft,
+} from '../utils/uiStateCache'
 import ToolCall from './tool_call.vue'
+
+const CHAT_DRAFT_DEBOUNCE_MS = 220
 
 const md = markdownit({ html: true, breaks: true })
 md.use(markdownFileLinkPlugin)
@@ -301,6 +316,32 @@ const value = ref('')
 const agentSettingsExpanded = ref(props.defaultAgentSettingsExpanded)
 const localConversation = ref<Conversation>(props.conversation)
 const conversationRef = toRef(props, 'conversation')
+
+let draftHydrating = false
+let lastHydratedDraftKey = ''
+const draftWriter = createDebouncedWriter((conversationKey: string, draft: string) => {
+  if (!conversationKey) return
+  saveChatDraft(conversationKey, draft)
+}, CHAT_DRAFT_DEBOUNCE_MS)
+
+const hydrateDraftFor = (conversationKey: string) => {
+  if (!conversationKey) {
+    lastHydratedDraftKey = ''
+    return
+  }
+  if (conversationKey === lastHydratedDraftKey) return
+  draftHydrating = true
+  try {
+    const stored = loadChatDraft(conversationKey)
+    // 只在使用者尚未手動輸入內容時，才覆蓋目前 value，避免覆蓋掉「新對話」尚未綁定 key 前先輸入的草稿。
+    if (stored && !value.value) {
+      value.value = stored
+    }
+  } finally {
+    draftHydrating = false
+    lastHydratedDraftKey = conversationKey
+  }
+}
 const waiting_for_input = ref(false)
 const isMessageLoading = ref(false)
 const agentOptions = ref<AgentSessionUiOptions>({})
@@ -308,6 +349,9 @@ const agentImages = ref<AgentImageInput[]>([])
 
 const isFullAccess = computed(() => agentOptions.value.permission_mode === 'full')
 const pendingApproval = ref<PendingApproval | null>(null)
+let activeAbortController: AbortController | null = null
+const aborting = ref(false)
+const userAborted = ref(false)
 
 const availableModels = ref<string[]>([])
 const availableBranches = ref<string[]>([])
@@ -526,8 +570,24 @@ const scrollToBottom = async () => {
 }
 
 watch(conversationRef, async () => {
+  // 切換到不同 conversation 時：先把目前的草稿沖到 storage 確保不流失，再為新 key 還原草稿。
+  draftWriter.flush()
   localConversation.value = props.conversation
+  if (props.conversation.key !== lastHydratedDraftKey) {
+    // 切換到不同 session 才清掉目前輸入框，避免把舊 session 的內容寫到新 session。
+    value.value = ''
+    lastHydratedDraftKey = ''
+    hydrateDraftFor(props.conversation.key)
+  }
   await scrollToBottom()
+})
+
+watch(value, (next) => {
+  if (draftHydrating) return
+  const key = localConversation.value.key
+  // 「新對話」尚未配發 key 時不存草稿（會被合併在第一次送出後的 conversation 中）。
+  if (!key) return
+  draftWriter.schedule(key, next)
 })
 
 watch(() => localConversation.value.messages.length, async () => {
@@ -555,6 +615,12 @@ const sendMessage = async () => {
   const message = value.value
   value.value = ''
   if (!message) return
+
+  // 訊息送出後立刻清除該 conversation 的草稿，避免回到頁面又跳回剛送出的內容。
+  draftWriter.cancel()
+  if (localConversation.value.key) {
+    clearChatDraft(localConversation.value.key)
+  }
 
   localConversation.value.messages.push({
     id: localConversation.value.messages.length + 1,
@@ -618,6 +684,9 @@ const sendMessageToServer = async (messages: ChatHistory[]) => {
 
   isMessageLoading.value = true
   waiting_for_input.value = false
+  userAborted.value = false
+  aborting.value = false
+  activeAbortController = new AbortController()
 
   const waitingMessage = {
     id: localConversation.value.messages.length + 1,
@@ -696,6 +765,7 @@ const sendMessageToServer = async (messages: ChatHistory[]) => {
       'Content-Type': 'application/json',
     },
     data: payload,
+    signal: activeAbortController.signal,
     onMessage: (event) => {
       const data = JSON.parse(event!.data)
       if (data.type === 'text' && data.content !== '') {
@@ -836,6 +906,10 @@ const sendMessageToServer = async (messages: ChatHistory[]) => {
   })
     .then(() => {
       isMessageLoading.value = false
+      if (userAborted.value) {
+        finalizeAfterUserAbort(waitingRemoved)
+        return
+      }
       if (!waitingRemoved) {
         localConversation.value.messages.pop()
         waitingRemoved = true
@@ -856,6 +930,10 @@ const sendMessageToServer = async (messages: ChatHistory[]) => {
     })
     .catch((error) => {
       isMessageLoading.value = false
+      if (userAborted.value) {
+        finalizeAfterUserAbort(waitingRemoved)
+        return
+      }
       if (!waitingRemoved) {
         localConversation.value.messages.pop()
       }
@@ -869,6 +947,58 @@ const sendMessageToServer = async (messages: ChatHistory[]) => {
       localConversation.value.messages = [...localConversation.value.messages]
       props.onNewMessage(localConversation.value)
     })
+    .finally(() => {
+      activeAbortController = null
+      aborting.value = false
+    })
+}
+
+const finalizeAfterUserAbort = (waitingRemoved: boolean) => {
+  // 把「思考中…」的占位訊息移除（如果還在），補上一條中止訊息，
+  // 並通知父層儲存對話。
+  if (!waitingRemoved) {
+    const last = localConversation.value.messages[localConversation.value.messages.length - 1]
+    if (last && last.role === 'assistant' && last.loading) {
+      localConversation.value.messages.pop()
+    }
+  }
+  localConversation.value.messages.push({
+    id: localConversation.value.messages.length + 1,
+    role: 'assistant',
+    content: '⏹ 已中止當前任務。',
+    timestamp: new Date().toLocaleString(),
+    loading: false,
+  })
+  localConversation.value.messages = [...localConversation.value.messages]
+  localConversation.value.updatedAt = new Date().getTime()
+  props.onNewMessage(localConversation.value)
+}
+
+const handleAbortMessage = async () => {
+  if (!isMessageLoading.value) return
+  if (aborting.value) return
+  aborting.value = true
+  userAborted.value = true
+  // 1) 先告訴後端把 CLI subprocess 殺掉，避免它繼續寫檔；失敗也繼續往下做客戶端中止。
+  const sessionId = localConversation.value.key
+  if (sessionId && props.systemSettings?.serverUrl) {
+    try {
+      await abortAgentSession(props.systemSettings.serverUrl, {
+        session_id: sessionId,
+        agent_brand: agentOptions.value.agent_brand,
+      })
+    } catch (error) {
+      console.warn('abortAgentSession failed', error)
+    }
+  }
+  // 2) 中止 SSE 連線；fetchEventData 會走 catch 分支，由 finalizeAfterUserAbort 收尾。
+  if (activeAbortController) {
+    try {
+      activeAbortController.abort()
+    } catch {
+      // ignore
+    }
+  }
 }
 
 const handleEditConversationLabel = () => {
@@ -885,15 +1015,27 @@ const handleSaveConversationLabel = () => {
 
 let cleanupFilePathHandler: (() => void) | undefined
 
+const handleVisibilityChange = () => {
+  // 行動裝置切到背景或鎖屏時，瀏覽器隨時可能殺掉 tab，提早把草稿寫進 storage。
+  if (document.visibilityState === 'hidden') {
+    draftWriter.flush()
+  }
+}
+
 onMounted(() => {
   document.addEventListener('paste', handlePaste)
+  document.addEventListener('visibilitychange', handleVisibilityChange)
   if (messagesRef.value) {
     cleanupFilePathHandler = setupFilePathClickHandler(messagesRef.value, props.systemSettings?.serverUrl)
   }
+  pruneStaleChatDrafts()
+  hydrateDraftFor(localConversation.value.key)
 })
 
 onUnmounted(() => {
   document.removeEventListener('paste', handlePaste)
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
+  draftWriter.flush()
   cleanupFilePathHandler?.()
 })
 </script>
@@ -1126,6 +1268,39 @@ onUnmounted(() => {
   font-weight: 500;
   color: #333;
   margin-top: 16px;
+}
+
+.abort-button {
+  display: inline-block;
+  margin-top: 12px;
+  padding: 6px 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 77, 79, 0.55);
+  background: rgba(255, 77, 79, 0.08);
+  color: #cf1322;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.abort-button:hover {
+  background: rgba(255, 77, 79, 0.18);
+}
+
+.abort-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.chat-container.transparent-mode .abort-button {
+  background: rgba(255, 77, 79, 0.18);
+  color: #ffd6d6;
+  border-color: rgba(255, 176, 160, 0.55);
+}
+
+.chat-container.transparent-mode .abort-button:hover {
+  background: rgba(255, 77, 79, 0.32);
 }
 
 .approval-box {

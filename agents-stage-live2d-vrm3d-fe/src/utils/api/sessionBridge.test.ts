@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  abortAgentSession,
   createSessionBridgeSession,
   fetchSessionBridgeDirectories,
   resolveBridgeWsUrl,
@@ -88,6 +89,57 @@ describe('createSessionBridgeSession', () => {
         method: 'POST',
       }),
     )
+  })
+})
+
+describe('abortAgentSession', () => {
+  it('posts session_id and brand to the abort endpoint', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        aborted: true,
+        session_id: 's-1',
+        agent_brand: 'codex',
+      }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await abortAgentSession('http://127.0.0.1:8000/', {
+      session_id: 's-1',
+      agent_brand: 'codex',
+    })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8000/api/session-bridge/agent/chat/abort',
+      expect.objectContaining({
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: 's-1', agent_brand: 'codex' }),
+      }),
+    )
+    expect(result).toEqual({ ok: true, aborted: true, session_id: 's-1', agent_brand: 'codex' })
+  })
+
+  it('throws when the server responds with non-2xx', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 500, json: async () => ({}) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(
+      abortAgentSession('http://127.0.0.1:8000/', { session_id: 's-1' }),
+    ).rejects.toThrow(/abort agent session/)
+  })
+
+  it('coerces missing fields in the response payload', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true, aborted: false }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await abortAgentSession(undefined, { session_id: 's-2' })
+
+    expect(result).toEqual({ ok: true, aborted: false, session_id: '', agent_brand: '' })
   })
 })
 

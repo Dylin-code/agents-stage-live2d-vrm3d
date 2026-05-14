@@ -27,8 +27,32 @@ MOTION_SEMANTIC_SLOTS = [
 DEFAULT_MAPPING_MODEL = os.getenv("LIVE2D_MOTION_MAPPING_MODEL", "gpt-5-codex").strip() or "gpt-5-codex"
 DEFAULT_MAPPING_CODEX_BIN = os.getenv("LIVE2D_MOTION_MAPPING_CODEX_BIN", "codex").strip() or "codex"
 WARMUP_LIMIT = max(0, int(os.getenv("LIVE2D_MOTION_MAPPING_WARMUP_LIMIT", "0") or "0"))
+# Shorter than CodexSessionChatService's 180s default — each model that
+# fails to map should give up quickly so a queue of unresponsive models
+# doesn't accumulate hours of stuck subprocesses on startup.
+WARMUP_IDLE_TIMEOUT_SEC = float(
+    os.getenv("LIVE2D_MOTION_MAPPING_IDLE_TIMEOUT_SEC", "30") or "30"
+)
+WARMUP_MAX_CONSECUTIVE_FAILURES = max(
+    1, int(os.getenv("LIVE2D_MOTION_MAPPING_MAX_CONSECUTIVE_FAILURES", "3") or "3")
+)
 _cache_lock = threading.Lock()
 _warmup_started = False
+
+
+def _warmup_enabled() -> bool:
+    """Whether to run the codex-driven semantic mapping warmup at startup.
+
+    Off by default: this kicks off a background daemon thread that
+    spawns a fresh ``codex`` subprocess per Live2D model. The codex CLI
+    isn't reliably responsive on this prompt shape and frequently hits
+    the idle-timeout — running it for every model on every boot eats
+    quota, RAM, and log space without producing useful cache entries.
+    Set ``LIVE2D_MOTION_MAPPING_WARMUP_ENABLED=1`` to opt in once the
+    cache is intentionally being populated.
+    """
+    raw = (os.getenv("LIVE2D_MOTION_MAPPING_WARMUP_ENABLED", "") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 _FRONTEND_DIR_NAMES = ("agents-stage-live2d-vrm3d-fe", "live2d-assistant-fe")
 _BACKEND_DIR_NAMES = ("agents-stage-live2d-vrm3d-server", "live2d-assistant-server")
 
@@ -306,6 +330,7 @@ def warmup_live2d_motion_mapping(config: Config | None = None) -> None:
     default_cwd = str(Path.cwd().resolve())
     service = CodexSessionChatService(
         codex_bin=DEFAULT_MAPPING_CODEX_BIN,
+        idle_timeout_sec=WARMUP_IDLE_TIMEOUT_SEC,
         default_cwd=default_cwd,
     )
     mapper_session_id = ""
@@ -323,6 +348,7 @@ def warmup_live2d_motion_mapping(config: Config | None = None) -> None:
         logger.warning("Missing codex mapper session id")
         return
     changed = False
+    consecutive_failures = 0
     for entry in entries:
         model_path = entry["model_path"]
         motion_hash = entry["motion_hash"]
@@ -337,7 +363,15 @@ def warmup_live2d_motion_mapping(config: Config | None = None) -> None:
             motion_names=entry["motion_names"],
         ))
         if not semantic:
+            consecutive_failures += 1
+            if consecutive_failures >= WARMUP_MAX_CONSECUTIVE_FAILURES:
+                logger.warning(
+                    "Live2D motion mapping warmup aborted after %d consecutive failures",
+                    consecutive_failures,
+                )
+                break
             continue
+        consecutive_failures = 0
         models[model_path] = {
             "motion_hash": motion_hash,
             "semantic_motions": semantic,
@@ -352,6 +386,10 @@ def warmup_live2d_motion_mapping(config: Config | None = None) -> None:
 
 def start_live2d_motion_mapping_warmup(config: Config | None = None, force: bool = False) -> None:
     global _warmup_started
+    # Opt-in: warmup spawns codex subprocesses per Live2D model and is
+    # often slow/flaky. Off by default; set env to enable.
+    if not _warmup_enabled() and not force:
+        return
     with _cache_lock:
         if _warmup_started and not force:
             return

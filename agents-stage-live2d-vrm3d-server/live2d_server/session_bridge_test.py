@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi import HTTPException
 
 from live2d_server.session_bridge import (
+    AgentAbortRequest,
     AgentChatApprovalRequest,
     AgentChatRequest,
     AgentConversationRequest,
@@ -25,6 +26,7 @@ from live2d_server.session_bridge import (
     SessionBridgeService,
     _FileCursor,
     _SessionRecord,
+    bridge_agent_chat_abort,
     bridge_codex_chat,
     bridge_codex_chat_approval,
     bridge_codex_new_session,
@@ -89,6 +91,9 @@ class _FakeStreamProcess:
         self.stderr = _FakeBytesReader(stderr)
         self.returncode = returncode
         self.killed = False
+        # asyncio.subprocess.Process exposes .pid; tests log it on abort, so the
+        # fake needs one too. The exact value doesn't matter for these tests.
+        self.pid = 0
 
     def kill(self) -> None:
         self.killed = True
@@ -908,6 +913,130 @@ class SessionBridgeServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(snapshot["sessions"]), 1)
         self.assertEqual(snapshot["sessions"][0]["state"], "WAITING")
 
+    async def test_consume_claude_file_offloads_io_to_thread(self) -> None:
+        """Regression: sync ``stat``/``open``/``read`` must run in the
+        thread pool so a long scan over hundreds of session files does
+        NOT block the event loop. Verifies :func:`asyncio.to_thread` is
+        used to invoke the blocking reader.
+
+        Doesn't try to measure latency (flaky on busy CI). Instead asserts
+        that the blocking helper was invoked via the threadpool dispatcher
+        — proven by patching ``asyncio.to_thread`` and capturing the call.
+        """
+        session_id = "00000000-0000-0000-0000-000000000043"
+        now = _now_iso()
+        with TemporaryDirectory() as claude_dir:
+            self.service.claude_session_dir = Path(claude_dir)
+            project_dir = self.service.claude_session_dir / "project-thread"
+            project_dir.mkdir(parents=True, exist_ok=True)
+            file_path = project_dir / f"{session_id}.jsonl"
+            file_path.write_text(
+                json.dumps({
+                    "type": "user", "sessionId": session_id, "timestamp": now,
+                    "cwd": "/tmp/work", "message": {"role": "user", "content": "x"},
+                }, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+
+            real_to_thread = asyncio.to_thread
+            calls: list[str] = []
+
+            async def _record_to_thread(func, *args, **kwargs):
+                calls.append(func.__name__)
+                return await real_to_thread(func, *args, **kwargs)
+
+            with patch("live2d_server.session_bridge_runtime.asyncio.to_thread", new=_record_to_thread):
+                await self.service._consume_claude_file(file_path)
+            self.assertIn("_read_claude_file_blocking", calls)
+
+    async def test_consume_claude_file_only_reads_tail_on_first_encounter(self) -> None:
+        """Regression: previously _consume_claude_file started at offset 0 on
+        first encounter, replaying every historical line at startup and
+        choking the event loop. It should mirror _consume_file and seek to
+        ``max(size - initial_read_bytes, 0)`` for the first scan."""
+        session_id = "00000000-0000-0000-0000-000000000041"
+        now = _now_iso()
+        with TemporaryDirectory() as claude_dir:
+            self.service.claude_session_dir = Path(claude_dir)
+            project_dir = self.service.claude_session_dir / "project-x"
+            project_dir.mkdir(parents=True, exist_ok=True)
+            file_path = project_dir / f"{session_id}.jsonl"
+            # Lower the cap so we don't have to write megabytes in the test.
+            self.service.initial_read_bytes = 512
+            pad_line = json.dumps(
+                {
+                    "type": "user",
+                    "sessionId": session_id,
+                    "timestamp": now,
+                    "cwd": "/tmp/work-old",
+                    "message": {"role": "user", "content": "ancient-history"},
+                },
+                ensure_ascii=False,
+            )
+            tail_line = json.dumps(
+                {
+                    "type": "user",
+                    "sessionId": session_id,
+                    "timestamp": now,
+                    "cwd": "/tmp/work-new",
+                    "message": {"role": "user", "content": "recent-prompt"},
+                },
+                ensure_ascii=False,
+            )
+            # Build a file well over initial_read_bytes so seek must happen.
+            lines = [pad_line] * 30 + [tail_line]
+            file_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            self.assertGreater(file_path.stat().st_size, self.service.initial_read_bytes)
+
+            with patch.object(self.service, "_ingest_claude_line", new=AsyncMock()) as ingest_mock:
+                await self.service._consume_claude_file(file_path)
+
+            ingested_lines = [call.args[0] for call in ingest_mock.await_args_list]
+            # Tail must be present; we should NOT have replayed the whole prefix.
+            self.assertTrue(any("recent-prompt" in line for line in ingested_lines))
+            self.assertLess(
+                len(ingested_lines), len(lines),
+                "tail-only seek failed; ingested every historical line",
+            )
+
+    async def test_consume_claude_file_resumes_from_cursor_offset(self) -> None:
+        """When the cursor already exists (subsequent scans), only the
+        appended tail since last offset should be ingested."""
+        session_id = "00000000-0000-0000-0000-000000000042"
+        now = _now_iso()
+        with TemporaryDirectory() as claude_dir:
+            self.service.claude_session_dir = Path(claude_dir)
+            project_dir = self.service.claude_session_dir / "project-y"
+            project_dir.mkdir(parents=True, exist_ok=True)
+            file_path = project_dir / f"{session_id}.jsonl"
+            initial = json.dumps(
+                {"type": "user", "sessionId": session_id, "timestamp": now,
+                 "cwd": "/tmp/work", "message": {"role": "user", "content": "first"}},
+                ensure_ascii=False,
+            )
+            file_path.write_text(initial + "\n", encoding="utf-8")
+
+            # Make the file shorter than initial_read_bytes so first scan reads from 0.
+            self.service.initial_read_bytes = 1024 * 1024
+            await self.service._consume_claude_file(file_path)
+            cursor_after_first = self.service._claude_files[str(file_path)]
+            self.assertGreater(cursor_after_first.offset, 0)
+
+            # Append a new line then re-scan; only the new line should be ingested.
+            appended = json.dumps(
+                {"type": "user", "sessionId": session_id, "timestamp": now,
+                 "cwd": "/tmp/work", "message": {"role": "user", "content": "second"}},
+                ensure_ascii=False,
+            )
+            with file_path.open("a", encoding="utf-8") as f:
+                f.write(appended + "\n")
+
+            with patch.object(self.service, "_ingest_claude_line", new=AsyncMock()) as ingest_mock:
+                await self.service._consume_claude_file(file_path)
+            ingested = [call.args[0] for call in ingest_mock.await_args_list]
+            self.assertEqual(len(ingested), 1)
+            self.assertIn("second", ingested[0])
+
     async def test_claude_ingest_broadcasts_session_state_event(self) -> None:
         session_id = "00000000-0000-0000-0000-000000000020"
         now = _now_iso()
@@ -1000,7 +1129,43 @@ class CodexSessionChatServiceTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("--full-auto", command)
         self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", command)
-        self.assertLess(command.index("--full-auto"), command.index("exec"))
+        # Codex CLI requires --full-auto AFTER `exec` (it's a subcommand flag).
+        self.assertGreater(command.index("--full-auto"), command.index("exec"))
+
+    async def test_build_cli_command_wires_auto_review_for_auto_mode(self) -> None:
+        """Regression: codex auto mode must produce ``-a on-request`` at
+        the top level AND ``-c approvals_reviewer="auto_review"`` +
+        ``--sandbox workspace-write`` on the exec subcommand. This is the
+        non-interactive equivalent of TUI Auto-review."""
+        service = CodexSessionChatService(codex_bin="codex", default_cwd="/tmp/workspace")
+        command = service._build_cli_command(
+            session_id="00000000-0000-0000-0000-000000000123",
+            prompt="hello",
+            cwd="/tmp/workspace",
+            image_paths=[],
+            model="gpt-5-codex",
+            reasoning_effort="high",
+            permission_mode="auto",
+            approval_policy=None,
+            sandbox_mode=None,
+        )
+        self.assertIn("-a", command)
+        self.assertEqual(command[command.index("-a") + 1], "on-request")
+        # -a on-request must precede the exec subcommand.
+        self.assertLess(command.index("-a"), command.index("exec"))
+        # approvals_reviewer + --sandbox must follow exec.
+        self.assertIn('approvals_reviewer="auto_review"', command)
+        self.assertGreater(
+            command.index('approvals_reviewer="auto_review"'),
+            command.index("exec"),
+        )
+        self.assertIn("--sandbox", command)
+        self.assertEqual(
+            command[command.index("--sandbox") + 1], "workspace-write",
+        )
+        # Auto mode must NOT include --full-auto or --dangerously-bypass.
+        self.assertNotIn("--full-auto", command)
+        self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", command)
 
     async def test_build_cli_command_uses_dangerous_flag_for_full_mode(self) -> None:
         service = CodexSessionChatService(codex_bin="codex", timeout_sec=5, default_cwd="/tmp/workspace")
@@ -1017,7 +1182,8 @@ class CodexSessionChatServiceTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("--dangerously-bypass-approvals-and-sandbox", command)
         self.assertNotIn("--full-auto", command)
-        self.assertLess(command.index("--dangerously-bypass-approvals-and-sandbox"), command.index("exec"))
+        # Same as --full-auto: belongs after `exec`.
+        self.assertGreater(command.index("--dangerously-bypass-approvals-and-sandbox"), command.index("exec"))
 
     async def test_run_prompt_aggregates_text_chunks(self) -> None:
         service = CodexSessionChatService(codex_bin="codex", timeout_sec=5, default_cwd="/tmp/workspace")
@@ -1078,7 +1244,7 @@ class CodexSessionChatServiceTest(unittest.IsolatedAsyncioTestCase):
         cmd = recorded_args.get("cmd", [])
         self.assertIn("--full-auto", cmd)
         self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", cmd)
-        self.assertLess(cmd.index("--full-auto"), cmd.index("exec"))
+        self.assertGreater(cmd.index("--full-auto"), cmd.index("exec"))
         self.assertIsInstance(recorded_kwargs.get("env"), dict)
 
     async def test_create_session_prefers_runtime_turn_context_values(self) -> None:
@@ -1282,6 +1448,43 @@ class ClaudeSessionChatServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(context_events)
         last_context = context_events[-1].get("content") if isinstance(context_events[-1].get("content"), dict) else {}
         self.assertEqual(last_context.get("total_tokens"), 73367)
+
+    async def test_stream_prompt_breaks_after_result_event_and_ignores_trailing_lines(self) -> None:
+        """Regression: ``result`` is the terminal event in claude stream-json.
+        Older code did ``continue`` after handling it, so when the CLI didn't
+        close stdout we sat in the loop until idle timeout. Now we break and
+        ignore any trailing events even if stdout is still open."""
+        service = ClaudeSessionChatService(
+            claude_bin="claude", idle_timeout_sec=5, max_timeout_sec=5,
+            default_cwd="/tmp/workspace",
+        )
+        events = [
+            json.dumps({"type": "result", "subtype": "success", "result": "OK"}).encode("utf-8") + b"\n",
+            # Any post-result event must be ignored — we already broke out.
+            json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "ghost"}]}}).encode("utf-8") + b"\n",
+        ]
+
+        async def _fake_create_subprocess_exec(*_args, **_kwargs):
+            # returncode=0 simulates a CLI that exits cleanly after the
+            # terminal event; behaviour with a hung CLI is exercised by
+            # the post-loop kill path, hard to mock here without races.
+            return _FakeStreamProcess(stdout_lines=events, returncode=0, stderr=b"")
+
+        emitted: list[dict[str, object]] = []
+        with patch(
+            "live2d_server.session_bridge_claude_chat.asyncio.create_subprocess_exec",
+            side_effect=_fake_create_subprocess_exec,
+        ):
+            async for item in service.stream_prompt(
+                session_id="claude-session-break",
+                prompt="hi",
+                permission_mode="default",
+            ):
+                emitted.append(item)
+
+        texts = [str(item.get("content")) for item in emitted if item.get("type") == "text"]
+        self.assertIn("OK", texts)
+        self.assertNotIn("ghost", texts, "post-result event leaked through")
 
 
 class BridgeCodexChatApiTest(unittest.IsolatedAsyncioTestCase):
@@ -1802,6 +2005,267 @@ class BridgeDirectoryBrowseApiTest(unittest.IsolatedAsyncioTestCase):
                 await bridge_browse_directories(missing_path)
 
         self.assertEqual(error_context.exception.status_code, 404)
+
+
+def _fake_kill_tree(process) -> None:
+    """Stand-in for _kill_process_tree that just records the kill on a fake
+    process object — keeps abort tests independent of OS-level signal delivery."""
+    if hasattr(process, "kill"):
+        process.kill()
+
+
+class CodexAbortSessionTest(unittest.IsolatedAsyncioTestCase):
+    async def test_abort_session_kills_registered_process(self) -> None:
+        service = CodexSessionChatService.__new__(CodexSessionChatService)
+        service._active_processes = {}
+        service._active_processes_lock = asyncio.Lock()
+        process = _FakeStreamProcess([])
+        process.returncode = None
+        await service._register_active_process("session-1", process)
+
+        with patch("live2d_server.session_bridge_chat._kill_process_tree", side_effect=_fake_kill_tree):
+            aborted = await service.abort_session("session-1")
+        self.assertTrue(aborted)
+        self.assertTrue(process.killed)
+
+    async def test_abort_session_returns_false_when_no_active_process(self) -> None:
+        service = CodexSessionChatService.__new__(CodexSessionChatService)
+        service._active_processes = {}
+        service._active_processes_lock = asyncio.Lock()
+
+        aborted = await service.abort_session("missing-session")
+        self.assertFalse(aborted)
+
+    async def test_abort_session_skips_already_finished_process(self) -> None:
+        service = CodexSessionChatService.__new__(CodexSessionChatService)
+        service._active_processes = {}
+        service._active_processes_lock = asyncio.Lock()
+        finished = _FakeStreamProcess([], returncode=0)
+        await service._register_active_process("session-2", finished)
+
+        aborted = await service.abort_session("session-2")
+        self.assertFalse(aborted)
+        self.assertFalse(finished.killed)
+
+    async def test_register_kills_previous_in_flight_process(self) -> None:
+        service = CodexSessionChatService.__new__(CodexSessionChatService)
+        service._active_processes = {}
+        service._active_processes_lock = asyncio.Lock()
+        first = _FakeStreamProcess([])
+        first.returncode = None
+        second = _FakeStreamProcess([])
+
+        await service._register_active_process("session-3", first)
+        await service._register_active_process("session-3", second)
+
+        self.assertTrue(first.killed, "previous process should be killed when a new one registers")
+        self.assertFalse(second.killed)
+
+    async def test_abort_session_invokes_kill_process_tree(self) -> None:
+        service = CodexSessionChatService.__new__(CodexSessionChatService)
+        service._active_processes = {}
+        service._active_processes_lock = asyncio.Lock()
+        process = _FakeStreamProcess([])
+        process.returncode = None
+        await service._register_active_process("tree-session", process)
+
+        with patch("live2d_server.session_bridge_chat._kill_process_tree") as kill_mock:
+            await service.abort_session("tree-session")
+
+        # 確保 abort 走的是 process tree kill，而不是只殺父行程 — 避免 Claude
+        # spawn 的 sub-agent / MCP server 變孤兒程序繼續執行。
+        kill_mock.assert_called_once_with(process)
+
+
+class ClaudeAbortSessionTest(unittest.IsolatedAsyncioTestCase):
+    async def test_abort_session_kills_registered_process(self) -> None:
+        service = ClaudeSessionChatService.__new__(ClaudeSessionChatService)
+        service._active_processes = {}
+        service._active_processes_lock = asyncio.Lock()
+        process = _FakeStreamProcess([])
+        process.returncode = None
+        await service._register_active_process("claude-session", process)
+
+        with patch("live2d_server.session_bridge_claude_chat._kill_process_tree", side_effect=_fake_kill_tree):
+            aborted = await service.abort_session("claude-session")
+        self.assertTrue(aborted)
+        self.assertTrue(process.killed)
+
+    async def test_abort_session_invokes_kill_process_tree(self) -> None:
+        service = ClaudeSessionChatService.__new__(ClaudeSessionChatService)
+        service._active_processes = {}
+        service._active_processes_lock = asyncio.Lock()
+        process = _FakeStreamProcess([])
+        process.returncode = None
+        await service._register_active_process("claude-tree", process)
+
+        with patch("live2d_server.session_bridge_claude_chat._kill_process_tree") as kill_mock:
+            await service.abort_session("claude-tree")
+
+        kill_mock.assert_called_once_with(process)
+
+
+class KillProcessTreeTest(unittest.TestCase):
+    def test_returns_immediately_when_process_already_exited(self) -> None:
+        from live2d_server.session_bridge_shared import _kill_process_tree
+
+        process = _FakeStreamProcess([], returncode=0)
+        # Should be a no-op — never call into OS-level kill primitives.
+        # ``create=True`` because killpg is POSIX-only and missing on Windows.
+        with patch("live2d_server.session_bridge_shared.subprocess.run") as run_mock, \
+             patch("live2d_server.session_bridge_shared.os.killpg", create=True) as killpg_mock:
+            _kill_process_tree(process)
+        run_mock.assert_not_called()
+        killpg_mock.assert_not_called()
+
+    def test_windows_branch_calls_taskkill_with_tree_flag(self) -> None:
+        from live2d_server.session_bridge_shared import _kill_process_tree
+
+        process = _FakeStreamProcess([])
+        process.returncode = None
+        process.pid = 4242
+
+        with patch("live2d_server.session_bridge_shared.sys") as sys_mock, \
+             patch("live2d_server.session_bridge_shared.subprocess.run") as run_mock:
+            sys_mock.platform = "win32"
+            _kill_process_tree(process)
+
+        run_mock.assert_called_once()
+        args, kwargs = run_mock.call_args
+        cmd = args[0]
+        # Use /T to recurse the whole subprocess tree, /F to force.
+        self.assertEqual(cmd[0], "taskkill")
+        self.assertIn("/F", cmd)
+        self.assertIn("/T", cmd)
+        self.assertIn("4242", cmd)
+        self.assertEqual(kwargs.get("check"), False)
+
+    def test_posix_branch_calls_killpg_on_session_leader(self) -> None:
+        from live2d_server.session_bridge_shared import _kill_process_tree
+
+        process = _FakeStreamProcess([])
+        process.returncode = None
+        process.pid = 9999
+
+        with patch("live2d_server.session_bridge_shared.sys") as sys_mock, \
+             patch("live2d_server.session_bridge_shared.os.getpgid", create=True, return_value=9999) as getpgid_mock, \
+             patch("live2d_server.session_bridge_shared.os.killpg", create=True) as killpg_mock:
+            sys_mock.platform = "linux"
+            _kill_process_tree(process)
+
+        getpgid_mock.assert_called_once_with(9999)
+        killpg_mock.assert_called_once()
+        called_pgid, called_signal = killpg_mock.call_args[0]
+        self.assertEqual(called_pgid, 9999)
+        # SIGKILL — anything weaker can be ignored by a hung CLI. Fallback to
+        # 9 (POSIX numeric value) when the constant is unavailable, e.g. on Windows.
+        import signal as _signal
+        self.assertEqual(called_signal, getattr(_signal, "SIGKILL", 9))
+
+    def test_posix_swallows_process_lookup_error(self) -> None:
+        from live2d_server.session_bridge_shared import _kill_process_tree
+
+        process = _FakeStreamProcess([])
+        process.returncode = None
+        process.pid = 1234
+
+        with patch("live2d_server.session_bridge_shared.sys") as sys_mock, \
+             patch("live2d_server.session_bridge_shared.os.getpgid", create=True, return_value=1234), \
+             patch("live2d_server.session_bridge_shared.os.killpg", create=True, side_effect=ProcessLookupError):
+            sys_mock.platform = "linux"
+            # Must not raise — process already gone is a benign race.
+            _kill_process_tree(process)
+
+
+class IsolatedSubprocessKwargsTest(unittest.TestCase):
+    def test_windows_uses_create_new_process_group(self) -> None:
+        from live2d_server.session_bridge_shared import _isolated_subprocess_kwargs
+
+        with patch("live2d_server.session_bridge_shared.sys") as sys_mock:
+            sys_mock.platform = "win32"
+            kwargs = _isolated_subprocess_kwargs()
+
+        self.assertIn("creationflags", kwargs)
+        # Avoid asserting the exact int value — it's an OS-defined constant.
+        self.assertIsInstance(kwargs["creationflags"], int)
+
+    def test_posix_uses_start_new_session(self) -> None:
+        from live2d_server.session_bridge_shared import _isolated_subprocess_kwargs
+
+        with patch("live2d_server.session_bridge_shared.sys") as sys_mock:
+            sys_mock.platform = "linux"
+            kwargs = _isolated_subprocess_kwargs()
+
+        self.assertEqual(kwargs, {"start_new_session": True})
+
+
+class BridgeAgentChatAbortApiTest(unittest.IsolatedAsyncioTestCase):
+    async def test_abort_dispatches_to_explicit_brand(self) -> None:
+        codex_service = AsyncMock()
+        codex_service.abort_session = AsyncMock(return_value=False)
+        claude_service = AsyncMock()
+        claude_service.abort_session = AsyncMock(return_value=True)
+
+        def _get_chat_service(brand: str):
+            return {"codex": codex_service, "claude": claude_service}[brand]
+
+        with patch(
+            "live2d_server.session_bridge_api.agent_provider.get_chat_service",
+            side_effect=_get_chat_service,
+        ):
+            payload = await bridge_agent_chat_abort(
+                AgentAbortRequest(session_id="abc-123", agent_brand="claude")
+            )
+
+        codex_service.abort_session.assert_not_awaited()
+        claude_service.abort_session.assert_awaited_once_with("abc-123")
+        self.assertTrue(payload["aborted"])
+        self.assertEqual(payload["agent_brand"], "claude")
+        self.assertEqual(payload["session_id"], "abc-123")
+
+    async def test_abort_falls_back_to_iterating_brands_when_unspecified(self) -> None:
+        codex_service = AsyncMock()
+        codex_service.abort_session = AsyncMock(return_value=True)
+        claude_service = AsyncMock()
+        claude_service.abort_session = AsyncMock(return_value=False)
+
+        def _get_chat_service(brand: str):
+            return {"codex": codex_service, "claude": claude_service}[brand]
+
+        with patch(
+            "live2d_server.session_bridge_api.agent_provider.get_chat_service",
+            side_effect=_get_chat_service,
+        ):
+            payload = await bridge_agent_chat_abort(AgentAbortRequest(session_id="xyz"))
+
+        codex_service.abort_session.assert_awaited_once_with("xyz")
+        # 一旦 codex 已成功中止，就不再嘗試 claude，避免誤殺其他 brand 同名 session。
+        claude_service.abort_session.assert_not_awaited()
+        self.assertTrue(payload["aborted"])
+        self.assertEqual(payload["agent_brand"], "codex")
+
+    async def test_abort_returns_aborted_false_when_nothing_to_kill(self) -> None:
+        codex_service = AsyncMock()
+        codex_service.abort_session = AsyncMock(return_value=False)
+        claude_service = AsyncMock()
+        claude_service.abort_session = AsyncMock(return_value=False)
+
+        def _get_chat_service(brand: str):
+            return {"codex": codex_service, "claude": claude_service}[brand]
+
+        with patch(
+            "live2d_server.session_bridge_api.agent_provider.get_chat_service",
+            side_effect=_get_chat_service,
+        ):
+            payload = await bridge_agent_chat_abort(AgentAbortRequest(session_id="ghost"))
+
+        self.assertFalse(payload["aborted"])
+        self.assertEqual(payload["agent_brand"], "")
+
+    async def test_abort_rejects_empty_session_id(self) -> None:
+        with self.assertRaises(HTTPException) as ctx:
+            await bridge_agent_chat_abort(AgentAbortRequest(session_id="   "))
+        self.assertEqual(ctx.exception.status_code, 422)
 
 
 if __name__ == "__main__":

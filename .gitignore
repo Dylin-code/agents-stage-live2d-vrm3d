@@ -54,3 +54,7 @@ config.json
 
 # Runtime stage settings (timestamps, camera positions, etc.)
 config/stage-settings.json
+
+# Master agent runtime state — conversation history and TG bindings
+# contain real user content & PII (chat_id, tg user_id, usernames).
+config/master-agent/

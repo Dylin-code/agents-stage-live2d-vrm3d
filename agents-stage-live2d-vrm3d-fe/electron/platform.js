@@ -27,9 +27,10 @@ export function buildWidgetWindowOptions(preloadPath) {
   if (isWindows()) {
     return {
       ...shared,
-      transparent: false,
-      hasShadow: true,
-      backgroundColor: '#0f1722',
+      resizable: false,
+      transparent: true,
+      hasShadow: false,
+      backgroundColor: '#00000000',
     }
   }
 

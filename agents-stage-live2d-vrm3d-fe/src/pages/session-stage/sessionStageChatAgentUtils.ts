@@ -124,19 +124,19 @@ export function createSessionStageChatAgentUtils(args: {
       sessionAgentOptionsBySession[session.session_id] = buildSessionAgentOptions(session)
       return
     }
-    current.model = current.model || context.model || ''
-    current.reasoning_effort = current.reasoning_effort || context.effort || ''
-    current.permission_mode = current.permission_mode
-      || String(context.permission_mode || '')
+    current.model = context.model || current.model || ''
+    current.reasoning_effort = context.effort || current.reasoning_effort || ''
+    current.permission_mode = String(context.permission_mode || '').trim()
       || (String(context.sandbox_mode || '').trim() === 'danger-full-access' ? 'full' : 'default')
+      || current.permission_mode
     if (current.plan_mode === undefined || current.plan_mode === null) {
       current.plan_mode = context.plan_mode === true
     }
     if (session.cwd) current.cwd = session.cwd
     if (!current.git_branch && session.branch) current.git_branch = session.branch
-    if (!current.persona_id && context.persona_id) current.persona_id = String(context.persona_id || '')
-    if (!current.persona_name && context.persona_name) current.persona_name = String(context.persona_name || '')
-    if (!current.persona_content && context.persona_content) current.persona_content = String(context.persona_content || '')
+    if (context.persona_id) current.persona_id = String(context.persona_id)
+    if (context.persona_name) current.persona_name = String(context.persona_name)
+    if (context.persona_content) current.persona_content = String(context.persona_content)
   }
 
   async function refreshSessionBranches(sessionId: string): Promise<void> {

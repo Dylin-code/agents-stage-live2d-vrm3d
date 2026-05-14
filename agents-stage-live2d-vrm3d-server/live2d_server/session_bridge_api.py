@@ -21,6 +21,7 @@ from .session_bridge_runtime import SessionBridgeService
 from .session_bridge_shared import (
     AGENT_BRAND_CLAUDE,
     AGENT_BRAND_CODEX,
+    AgentAbortRequest,
     AgentChatApprovalRequest,
     AgentChatRequest,
     AgentConversationRequest,
@@ -694,6 +695,36 @@ async def bridge_agent_new_session(request: AgentNewSessionRequest) -> dict[str,
     payload["persona_name"] = str(request.persona_name or "")
     payload["persona_content"] = str(request.persona_content or "")
     return payload
+
+
+@router.post("/agent/chat/abort")
+async def bridge_agent_chat_abort(request: AgentAbortRequest) -> dict[str, Any]:
+    """強制中止當前 session 正在執行的 agent CLI 子程序。
+
+    若呼叫時沒有任何進行中的 stream（例如使用者重複按了中止），回傳 aborted=False，HTTP 200。
+    若 session_id 為空，回傳 422。
+    """
+    session_id = (request.session_id or "").strip()
+    if not session_id:
+        raise HTTPException(status_code=422, detail="session_id is required")
+
+    if request.agent_brand:
+        brand = _normalize_agent_brand_or_400(request.agent_brand)
+        aborted = await agent_provider.get_chat_service(brand).abort_session(session_id)
+        return {"ok": True, "aborted": aborted, "session_id": session_id, "agent_brand": brand}
+
+    # Brand 未指定時嘗試所有 provider，誰持有該 session 的進程就由誰中止。
+    aborted_brand: Optional[str] = None
+    for brand in AgentProviderRouter.supported_brands():
+        if await agent_provider.get_chat_service(brand).abort_session(session_id):
+            aborted_brand = brand
+            break
+    return {
+        "ok": True,
+        "aborted": aborted_brand is not None,
+        "session_id": session_id,
+        "agent_brand": aborted_brand or "",
+    }
 
 
 @router.get("/agent/brands")

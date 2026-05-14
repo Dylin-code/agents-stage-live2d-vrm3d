@@ -13,6 +13,7 @@ const WS_PATH = '/api/session-bridge/ws'
 // Unified multi-brand endpoints
 const AGENT_CHAT_PATH = '/api/session-bridge/agent/chat'
 const AGENT_APPROVAL_PATH = '/api/session-bridge/agent/chat/approval'
+const AGENT_ABORT_PATH = '/api/session-bridge/agent/chat/abort'
 const AGENT_NEW_SESSION_PATH = '/api/session-bridge/agent/session/new'
 const AGENT_BRANDS_PATH = '/api/session-bridge/agent/brands'
 
@@ -249,6 +250,40 @@ export interface AgentBrandInfo {
   badge_icon: string
   models: string[]
   default_permission_mode?: string
+}
+
+export interface AgentAbortRequest {
+  session_id: string
+  agent_brand?: string
+}
+
+export interface AgentAbortResponse {
+  ok: boolean
+  aborted: boolean
+  session_id: string
+  agent_brand: string
+}
+
+export async function abortAgentSession(
+  serverUrl: string | undefined,
+  payload: AgentAbortRequest,
+): Promise<AgentAbortResponse> {
+  const base = trimTrailingSlash(serverUrl || DEFAULT_SERVER_URL)
+  const response = await fetch(`${base}${AGENT_ABORT_PATH}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) {
+    throw new Error(`failed to abort agent session: ${response.status}`)
+  }
+  const data = (await response.json()) as Partial<AgentAbortResponse>
+  return {
+    ok: !!data.ok,
+    aborted: !!data.aborted,
+    session_id: String(data.session_id || ''),
+    agent_brand: String(data.agent_brand || ''),
+  }
 }
 
 export async function fetchAgentBrands(

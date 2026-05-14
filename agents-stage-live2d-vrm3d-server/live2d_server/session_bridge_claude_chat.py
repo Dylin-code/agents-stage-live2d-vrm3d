@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import logging
+import math
 import mimetypes
 import os
 import shlex
@@ -21,6 +22,8 @@ from .session_bridge_shared import (
     _claude_model_context_window,
     _ensure_stream_reader_limit,
     _extract_message_content,
+    _isolated_subprocess_kwargs,
+    _kill_process_tree,
     _resolve_default_chat_cwd,
     _resolve_permission_settings,
 )
@@ -32,25 +35,100 @@ class ClaudeSessionChatError(RuntimeError):
     pass
 
 
+DEFAULT_CLAUDE_CLI_IDLE_TIMEOUT_SEC = 180.0
+DEFAULT_CLAUDE_CLI_MAX_TIMEOUT_SEC = 1800.0
+CLAUDE_CLI_IDLE_TIMEOUT_ENV = "CLAUDE_CLI_IDLE_TIMEOUT_SEC"
+CLAUDE_CLI_MAX_TIMEOUT_ENV = "CLAUDE_CLI_MAX_TIMEOUT_SEC"
+
+
+def _read_timeout_env(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    text = str(raw).strip()
+    if not text:
+        return default
+    try:
+        value = float(text)
+    except ValueError:
+        logger.warning("Invalid %s=%r. Fallback to default %s", name, raw, default)
+        return default
+    if not math.isfinite(value) or value <= 0:
+        logger.warning("Non-positive %s=%r. Fallback to default %s", name, raw, default)
+        return default
+    return value
+
+
 class ClaudeSessionChatService:
     """Wraps the `claude` CLI (Claude Code) in the same streaming bridge interface as CodexSessionChatService."""
 
     def __init__(
         self,
         claude_bin: str = "claude",
-        idle_timeout_sec: float = 180,
-        max_timeout_sec: float = 1800,
+        idle_timeout_sec: Optional[float] = None,
+        max_timeout_sec: Optional[float] = None,
         default_cwd: Optional[str] = None,
     ) -> None:
         self.claude_bin = claude_bin
-        self.idle_timeout_sec = idle_timeout_sec
-        self.max_timeout_sec = max_timeout_sec
+        self.idle_timeout_sec = (
+            float(idle_timeout_sec)
+            if idle_timeout_sec is not None
+            else _read_timeout_env(
+                CLAUDE_CLI_IDLE_TIMEOUT_ENV, DEFAULT_CLAUDE_CLI_IDLE_TIMEOUT_SEC,
+            )
+        )
+        self.max_timeout_sec = (
+            float(max_timeout_sec)
+            if max_timeout_sec is not None
+            else _read_timeout_env(
+                CLAUDE_CLI_MAX_TIMEOUT_ENV, DEFAULT_CLAUDE_CLI_MAX_TIMEOUT_SEC,
+            )
+        )
         self.default_cwd = _resolve_default_chat_cwd(default_cwd)
         self.approval_timeout_sec = 300
         self._pending_approvals: dict[str, asyncio.Future] = {}
         self._pending_approvals_lock = asyncio.Lock()
         self._approved_prefix_rules: set[tuple[str, ...]] = set()
         self._approved_prefix_rules_lock = asyncio.Lock()
+        # Per-session active subprocess registry. See CodexSessionChatService for rationale.
+        self._active_processes: dict[str, asyncio.subprocess.Process] = {}
+        self._active_processes_lock = asyncio.Lock()
+
+    async def _register_active_process(
+        self, session_id: str, process: asyncio.subprocess.Process
+    ) -> None:
+        async with self._active_processes_lock:
+            previous = self._active_processes.get(session_id)
+            self._active_processes[session_id] = process
+        if previous is not None and previous is not process and previous.returncode is None:
+            try:
+                previous.kill()
+            except ProcessLookupError:
+                pass
+
+    async def _unregister_active_process(
+        self, session_id: str, process: asyncio.subprocess.Process
+    ) -> None:
+        async with self._active_processes_lock:
+            current = self._active_processes.get(session_id)
+            if current is process:
+                self._active_processes.pop(session_id, None)
+
+    async def abort_session(self, session_id: str) -> bool:
+        """Force-kill the in-flight Claude CLI subprocess for the given session."""
+        key = (session_id or "").strip()
+        if not key:
+            return False
+        async with self._active_processes_lock:
+            process = self._active_processes.get(key)
+        if process is None or process.returncode is not None:
+            return False
+        try:
+            _kill_process_tree(process)
+        except ProcessLookupError:
+            return False
+        logger.info("Claude stream aborted by user session=%s pid=%s", key, process.pid)
+        return True
 
     # ------------------------------------------------------------------
     # Environment
@@ -438,6 +516,7 @@ class ClaudeSessionChatService:
                 stderr=asyncio.subprocess.PIPE,
                 cwd=effective_cwd,
                 env=self._build_claude_subprocess_env(),
+                **_isolated_subprocess_kwargs(),
             )
             # Feed multimodal payload via stdin then close.
             if stdin_data and process.stdin is not None:
@@ -450,11 +529,17 @@ class ClaudeSessionChatService:
             await self._cleanup_images(created_images)
             raise ClaudeSessionChatError(f"claude cli not found: {self.claude_bin}") from exc
 
+        await self._register_active_process(session_id_value, process)
         start_mono = time.monotonic()
         last_activity_mono = start_mono
         context_emitted = False
         streamed_via_delta = False  # Track if content_block_delta streamed text for current turn
         text_emitted = False  # Track if any text was emitted (avoid result event duplication)
+        # Set when claude CLI emits the terminal ``result`` event. Some CLI
+        # versions don't close stdout immediately after, which used to leave
+        # us spinning until ``idle_timeout``. We now break out, kill the
+        # leftover process, and suppress the non-zero returncode check.
+        result_terminated = False
 
         try:
             while True:
@@ -466,7 +551,7 @@ class ClaudeSessionChatService:
                         "Claude stream idle timeout session=%s idle=%.1fs total=%.1fs",
                         session_id_value, idle_elapsed, total_elapsed,
                     )
-                    process.kill()
+                    _kill_process_tree(process)
                     await process.wait()
                     raise ClaudeSessionChatError("claude cli idle timeout")
                 if total_elapsed > self.max_timeout_sec:
@@ -474,7 +559,7 @@ class ClaudeSessionChatService:
                         "Claude stream max timeout session=%s total=%.1fs",
                         session_id_value, total_elapsed,
                     )
-                    process.kill()
+                    _kill_process_tree(process)
                     await process.wait()
                     raise ClaudeSessionChatError("claude cli max timeout")
                 if process.stdout is None:
@@ -732,18 +817,32 @@ class ClaudeSessionChatService:
                         if model_context_window is not None:
                             token_ctx["model_context_window"] = model_context_window
                         yield {"type": "context", "content": token_ctx}
-                    continue
+                    # ``result`` is the terminal event in claude's stream-json
+                    # contract. Stop reading further; if the CLI process is
+                    # still running we'll terminate it below.
+                    result_terminated = True
+                    break
 
                 # (content_block_delta / start / stop handled earlier above)
 
+            if result_terminated and process.returncode is None:
+                # Process didn't close stdout after the terminal event; kill
+                # the tree so the post-loop wait() completes immediately.
+                _kill_process_tree(process)
             stderr_text = ""
             if process.stderr is not None:
-                stderr_text = (await process.stderr.read()).decode("utf-8", errors="ignore").strip()
+                try:
+                    stderr_text = (
+                        await asyncio.wait_for(process.stderr.read(), timeout=5.0)
+                    ).decode("utf-8", errors="ignore").strip()
+                except asyncio.TimeoutError:
+                    stderr_text = ""
             code = await process.wait()
-            if code != 0:
+            if code != 0 and not result_terminated:
                 detail = stderr_text or f"exit_code={code}"
                 raise ClaudeSessionChatError(f"claude cli failed: {detail}")
         finally:
+            await self._unregister_active_process(session_id_value, process)
             await self._cleanup_images(created_images)
 
     # ------------------------------------------------------------------
