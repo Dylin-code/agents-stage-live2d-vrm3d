@@ -10,8 +10,11 @@ live2d_models_collect/
 
 ## exclude devin.cursorrules files
 devin.cursorrules/
-tests/
-tools/
+# Anchored to repo root only — without the leading `/` these patterns
+# match any nested ``tests/`` or ``tools/`` directory, which would
+# silently swallow master_agent/tools and master_agent/tests.
+/tests/
+/tools/
 .cursorrules
 __pycache__/
 
