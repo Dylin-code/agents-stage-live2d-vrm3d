@@ -35,6 +35,7 @@ from .conversation_store import FileConversationStore
 from .llm.factory import build_chat_model, describe_active_llm, resolve_tool_mode
 from .persona import DEFAULT_DISPLAY_NAME, FilePersonaStore, PersonaConfig
 from .persona_presets import get_preset, list_presets
+from .project_registry import ProjectRegistry
 from .service import MasterAgentService
 from .shared import (
     MasterAgentAbortRequest,
@@ -57,10 +58,13 @@ from .tools import (
     ListAvailableModelsTool,
     ListBranchesTool,
     ListHistorySessionsTool,
+    ListProjectsTool,
     ListSessionsTool,
     ListSubTasksTool,
     QuerySessionStatusTool,
+    RegisterProjectTool,
     ReportToUserTool,
+    ResolveProjectTool,
     SearchSessionsTool,
     SwitchBranchTool,
     WaitForSubTaskTool,
@@ -101,6 +105,10 @@ def _build_default_registry() -> InMemoryToolRegistry:
     registry.register(ApprovePendingTool())
     # Filesystem discovery.
     registry.register(BrowseDirectoriesTool())
+    # Project registry (dev-registry shortcut → cwd).
+    registry.register(ListProjectsTool())
+    registry.register(ResolveProjectTool())
+    registry.register(RegisterProjectTool())
     # Git.
     registry.register(ListBranchesTool())
     registry.register(SwitchBranchTool())
@@ -125,6 +133,7 @@ async def _get_service() -> MasterAgentService:
         tracker = SubTaskTracker(state_change_hook=_on_subtask_change)
         conversation_store = FileConversationStore()
         persona_store = FilePersonaStore(_resolve_persona_path())
+        project_registry = ProjectRegistry()
         _service_instance = MasterAgentService(
             chat_model=chat_model,
             agent_provider=agent_provider,
@@ -134,6 +143,7 @@ async def _get_service() -> MasterAgentService:
             task_tracker=tracker,
             conversation_store=conversation_store,
             persona_store=persona_store,
+            project_registry=project_registry,
         )
         return _service_instance
 

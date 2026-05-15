@@ -710,6 +710,7 @@ class RegistryCoverageTest(unittest.TestCase):
             "list_available_models",
             "wait_for_subtask", "abort_session", "approve_pending",
             "browse_directories",
+            "list_projects", "resolve_project", "register_project",
             "list_branches", "switch_git_branch",
             "report_to_user",
         }

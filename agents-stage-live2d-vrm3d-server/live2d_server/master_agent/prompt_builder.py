@@ -19,6 +19,7 @@ from typing import Literal, Sequence
 
 from .contracts.llm_port import ToolSchema
 from .persona import PersonaConfig
+from .project_registry import Project
 from .shared import SubTask
 
 ToolMode = Literal["native", "prompt"]
@@ -190,6 +191,7 @@ def build_system_prompt(
     tool_mode: ToolMode = "native",
     tools: Sequence[ToolSchema] = (),
     persona: PersonaConfig | None = None,
+    projects: Sequence[Project] = (),
 ) -> str:
     parts: list[str] = []
     persona_block = _render_persona_block(persona)
@@ -197,6 +199,10 @@ def build_system_prompt(
         parts.extend(persona_block)
         parts.append("")  # blank line before the mechanical instructions
     parts.append(_BASE_SYSTEM_PROMPT.strip())
+    project_block = _render_project_block(projects)
+    if project_block:
+        parts.append("")
+        parts.extend(project_block)
     if tool_mode == "prompt" and tools:
         parts.append("")
         parts.extend(_render_prompt_tools_block(tools))
@@ -259,6 +265,43 @@ def _render_persona_block(persona: PersonaConfig | None) -> list[str]:
         "- Persona **完全不影響** 工具呼叫的 JSON / 參數;tool args 必須照 schema 規定,不准混入旁白、表情、Markdown、catchphrase。",
         "- 自我介紹時用上述角色名,不要說自己是 LLM 或 master agent。",
     ])
+    return lines
+
+
+def _render_project_block(projects: Sequence[Project]) -> list[str]:
+    """Render the known-projects table the director uses as a cwd lookup.
+
+    Compact format — one line per project — so a typical workstation
+    with ~10 projects costs ~10 lines of prompt. Each line surfaces the
+    canonical name, the absolute cwd, and (if any) aliases the user
+    might say informally ("kokoro", "stage"). The director should prefer
+    matching by name/alias here over asking the user where things live.
+
+    Returns ``[]`` when the registry is empty or unconfigured so the
+    prompt stays clean for setups that don't use the dev-registry.
+    """
+    if not projects:
+        # No registry data yet — still tell the LLM the persistence path
+        # exists so a fresh deployment learns as the user names projects.
+        return [
+            "No projects registered yet. When the user names a project,"
+            " use ``browse_directories`` to find its cwd, then call"
+            " ``register_project(name, cwd)`` so future conversations"
+            " skip the lookup.",
+        ]
+    lines: list[str] = [
+        "Known projects — use these cwds directly without asking the user."
+        " ``resolve_project`` is for disambiguating fuzzy names;"
+        " ``browse_directories`` is for projects not listed here."
+        " After ``browse_directories`` finds a project the user named but"
+        " isn't in this list, call ``register_project`` to persist it so"
+        " future conversations skip the lookup:",
+    ]
+    for project in projects:
+        alias_suffix = ""
+        if project.aliases:
+            alias_suffix = f"  [aliases: {', '.join(project.aliases)}]"
+        lines.append(f"- {project.name} → {project.cwd}{alias_suffix}")
     return lines
 
 

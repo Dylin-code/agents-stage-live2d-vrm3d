@@ -150,6 +150,56 @@
 **Terminator**
 - `report_to_user(text)` — 結束本回合，把 text 顯示給使用者
 
+## 重要更新：專案登錄表 → 導演直接知道每個專案在哪（2026-05-16）
+
+不必再每次告訴導演「Kokoro-Link 在哪個資料夾」。導演啟動時會把已知專案的名稱與 cwd 寫進 system prompt——說「派工到 kokoro」就能直接帶著正確 cwd 派出，不必反問。導演也能在用戶第一次提到新專案、用 `browse_directories` 找到位置後**自己把該專案記下來**，下次就直接認得。
+
+### 資料來源（兩層，全部選填）
+
+1. **`config/master-agent/projects.yaml`**（隨專案的「導演記憶」檔）
+   導演透過 `register_project` 工具自動寫入這個檔，也可以手動編輯。每個 clone 各自獨立——他人 clone 不會繼承你的本地映射。範例：
+   ```yaml
+   projects:
+     - name: scratch
+       cwd: C:\Users\User\Desktop\scratch
+       aliases: [scratchpad, 草稿]
+       description: 一次性實驗用
+   ```
+2. **`~/.config/dev-registry/services.yaml`**（選填的全機共用面板）
+   若你像本機作者一樣維護一份 dev-registry（port + cwd 統一登錄），導演會額外讀取，按 `cwd` 收斂同一個 cwd 下的所有 service（如 kokoro-api / kokoro / kokoro-postgres / kokoro-tts）歸為一個專案。**沒有這個檔案完全不影響**——導演會 fallback 到「Known projects 空、需要時用 `browse_directories` + `register_project` 自學」流程。
+
+兩個檔案在每次新對話開始時讀，編輯 YAML 不必重啟伺服器。
+
+### 系統提示注入
+
+導演的 system prompt 多一段「Known projects」清單，每個專案一行：
+
+```
+Known projects — use these cwds directly without asking the user. ...
+After ``browse_directories`` finds a project the user named but isn't in
+this list, call ``register_project`` to persist it ...
+- agents-stage → C:\Users\User\Desktop\agents-stage-live2d-vrm3d\... [aliases: ...]
+- kokoro-link → C:\Users\User\Desktop\Kokoro-Link [aliases: kokoro-api, kokoro, ...]
+- ...
+```
+
+兩個檔案都沒有時，這段會降級成一行學習提示：「No projects registered yet. When the user names a project, use ``browse_directories`` ... then call ``register_project`` ...」，讓 LLM 知道有自學途徑。
+
+### 新增工具
+
+| 工具 | 用途 |
+|---|---|
+| `list_projects` | 列出所有已知專案（name / cwd / aliases / services） |
+| `resolve_project(name)` | 模糊比對 name / alias / cwd basename，回傳對應 cwd。用在「派工到 kokoro」這類語句 |
+| `register_project(name, cwd, aliases?, description?)` | 把新專案寫進 `config/master-agent/projects.yaml`。同名 upsert、其他條目原樣保留、atomic write |
+
+### 環境變數
+
+| 變數 | 預設 | 說明 |
+|---|---|---|
+| `MASTER_AGENT_PROJECTS_FILE` | `config/master-agent/projects.yaml` | 導演記憶檔位置（讀+寫） |
+| `DEV_REGISTRY_SERVICES_FILE` | `~/.config/dev-registry/services.yaml` | 選填的 dev-registry 位置（唯讀）|
+
 ## 重要更新：導演（總控 Agent 角色設定）（2026-05-15）
 
 總控 Agent 預設換上「**導演**」這個角色——以舞台導演的視角接收需求、調度 codex 與 claude 工人。使用者可以隨時改名、換口吻、套用內建預設，或關掉角色回到純工具模式。

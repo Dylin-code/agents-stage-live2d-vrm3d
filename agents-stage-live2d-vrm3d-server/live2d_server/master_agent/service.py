@@ -21,6 +21,7 @@ from .contracts.llm_port import ChatMessage, ChatModelPort, ToolCall
 from .contracts.tool_port import ToolContext, ToolPort
 from .conversation_store import ConversationStore
 from .persona import PersonaStore
+from .project_registry import ProjectRegistry
 from .prompt_builder import ToolMode, build_system_prompt
 from .tool_call_parser import looks_like_tool_call_attempt, parse_tool_call
 from .shared import (
@@ -49,6 +50,7 @@ class _ToolServicesAdapter:
     task_tracker: SubTaskTracker
     loop: Any
     permit_full_access: bool = False
+    project_registry: Optional[ProjectRegistry] = None
 
     # Satisfies the ToolServices Protocol; @property not needed since
     # the dataclass attributes resolve to the same names.
@@ -65,6 +67,7 @@ class MasterAgentService:
         task_tracker: Optional[SubTaskTracker] = None,
         conversation_store: Optional[ConversationStore] = None,
         persona_store: Optional[PersonaStore] = None,
+        project_registry: Optional[ProjectRegistry] = None,
         tool_mode: ToolMode = "native",
     ) -> None:
         self._chat_model = chat_model
@@ -75,6 +78,7 @@ class MasterAgentService:
         self._task_tracker = task_tracker or SubTaskTracker()
         self._store = conversation_store or ConversationStore()
         self._persona_store = persona_store
+        self._project_registry = project_registry
         self._tool_mode: ToolMode = tool_mode
         self._abort_events: dict[str, asyncio.Event] = {}
 
@@ -97,6 +101,10 @@ class MasterAgentService:
     @property
     def persona_store(self) -> Optional[PersonaStore]:
         return self._persona_store
+
+    @property
+    def project_registry(self) -> Optional[ProjectRegistry]:
+        return self._project_registry
 
     @property
     def tool_registry(self) -> InMemoryToolRegistry:
@@ -165,6 +173,7 @@ class MasterAgentService:
             task_tracker=self._task_tracker,
             loop=asyncio.get_running_loop(),
             permit_full_access=permit_full_access,
+            project_registry=self._project_registry,
         )
         tool_schemas = self._registry.schemas()
         # In prompt mode we suppress the native tools field and instead embed
@@ -176,6 +185,17 @@ class MasterAgentService:
         # mid-conversation is rare and a stable system prompt across hops
         # plays better with provider prompt caching.
         persona = await self._persona_store.get() if self._persona_store is not None else None
+        # Project list comes from the registry's YAML sources — read
+        # once per run so edits land on the next user message without
+        # restarting the server, but the same snapshot is shared across
+        # every hop in this turn (stable cache key).
+        projects: list[Any] = []
+        if self._project_registry is not None:
+            try:
+                projects = self._project_registry.list_projects()
+            except Exception:  # noqa: BLE001 — registry IO must never block a turn
+                _LOGGER.exception("project registry load failed")
+                projects = []
 
         for hop in range(_MAX_HOPS):
             if abort_event.is_set():
@@ -188,6 +208,7 @@ class MasterAgentService:
                 tool_mode=self._tool_mode,
                 tools=tool_schemas if self._tool_mode == "prompt" else (),
                 persona=persona,
+                projects=projects,
             )
             llm_messages = _conversation_to_llm_messages(conversation)
 

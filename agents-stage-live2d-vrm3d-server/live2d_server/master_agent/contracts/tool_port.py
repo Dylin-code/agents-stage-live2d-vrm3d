@@ -79,6 +79,13 @@ class ToolServices(Protocol):
         the LLM can't shed all sandboxing on its own."""
         ...
 
+    @property
+    def project_registry(self) -> Any:
+        """Project name → cwd registry. May be ``None`` in tests that
+        don't care about project lookups; tools that need it must
+        degrade gracefully when missing."""
+        ...
+
 
 class ToolPort(Protocol):
     """One concrete tool — codex_new_session, claude_send_prompt, etc.
