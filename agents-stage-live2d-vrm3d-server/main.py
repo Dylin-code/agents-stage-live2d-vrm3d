@@ -24,6 +24,7 @@ from live2d_server.master_agent import master_agent_router
 from live2d_server.master_agent.telegram import start_telegram_bot, stop_telegram_bot
 from live2d_server.session_bridge import router as session_bridge_router
 from live2d_server.session_bridge import start_session_bridge, stop_session_bridge
+from live2d_server.tui_bridge_api import router as tui_bridge_router
 from live2d_server.web_terminal import router as terminal_router
 
 class SPAStaticFiles(StaticFiles):
@@ -59,6 +60,7 @@ async def lifespan(app: FastAPI):
     app.include_router(session_bridge_router)
     app.include_router(master_agent_router)
     app.include_router(terminal_router)
+    app.include_router(tui_bridge_router)
 
     # Remote mode: mount auth router
     if run_mode == "remote":

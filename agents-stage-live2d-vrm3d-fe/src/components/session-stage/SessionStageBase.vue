@@ -373,6 +373,126 @@
           <div class="session-time">{{ relativeTime(session.last_seen_at) }}</div>
         </div>
       </div>
+
+      <!-- TUI Bridge (tmux-backed) — independent section -->
+      <div
+        v-if="tuiEnabled && tuiHasTmux"
+        class="tui-bridge-section"
+      >
+        <div class="tui-bridge-section-header">
+          <div class="tui-bridge-section-title">
+            TUI Sessions
+            <span class="tui-bridge-count">
+              {{ tuiSessions.length }}/{{ tuiMaxSessions }}
+            </span>
+          </div>
+          <div class="tui-bridge-section-actions">
+            <button
+              class="tui-bridge-section-btn"
+              type="button"
+              title="重新整理"
+              :disabled="tuiLoading"
+              @click="tuiBridge.refreshSessions()"
+            >↻</button>
+            <button
+              class="tui-bridge-section-btn"
+              type="button"
+              @click="tuiBridge.openNewSessionPanel()"
+            >
+              {{ tuiNewSessionOpen ? '收起' : '新增' }}
+            </button>
+          </div>
+        </div>
+
+        <div v-if="tuiNewSessionOpen" class="tui-bridge-new-panel">
+          <input
+            v-model.trim="tuiNewSessionForm.label"
+            type="text"
+            class="tui-bridge-input"
+            placeholder="標籤（選填，例如：codex on repo）"
+            maxlength="120"
+          >
+
+          <!-- cwd: dropdown of recent dirs + input w/ datalist + browse button -->
+          <select
+            v-model="tuiCwdSelection"
+            class="tui-bridge-input"
+            @change="onTuiCwdSelectionChange"
+          >
+            <option value="">選擇最近使用的工作目錄</option>
+            <option v-for="cwd in newSessionCwdOptions" :key="cwd" :value="cwd">{{ cwd }}</option>
+          </select>
+          <div class="tui-bridge-cwd-row">
+            <input
+              v-model.trim="tuiNewSessionForm.cwd"
+              type="text"
+              list="tui-bridge-cwd-options"
+              class="tui-bridge-input tui-bridge-cwd-input"
+              placeholder="選擇、瀏覽或手動輸入工作目錄"
+            >
+            <button
+              class="tui-bridge-cwd-browse-btn"
+              type="button"
+              @click="tuiBridge.openDirectoryBrowser()"
+            >
+              瀏覽
+            </button>
+          </div>
+          <datalist id="tui-bridge-cwd-options">
+            <option v-for="cwd in newSessionCwdOptions" :key="cwd" :value="cwd"></option>
+          </datalist>
+
+          <input
+            v-model.trim="tuiNewSessionForm.command"
+            type="text"
+            class="tui-bridge-input"
+            placeholder="啟動指令（選填，留空 = 互動式 shell）"
+          >
+          <button
+            class="tui-bridge-submit"
+            type="button"
+            :disabled="tuiCreating || !tuiNewSessionForm.cwd"
+            @click="tuiBridge.createSession()"
+          >
+            {{ tuiCreating ? '建立中...' : '建立 TUI Session' }}
+          </button>
+        </div>
+
+        <div
+          v-if="tuiSessions.length === 0"
+          class="tui-bridge-empty"
+        >
+          {{ tuiLoading ? '載入中...' : '尚無 TUI session' }}
+        </div>
+
+        <div v-else class="tui-bridge-list">
+          <div
+            v-for="session in tuiSessions"
+            :key="session.session_id"
+            class="tui-bridge-card"
+            :class="{ attached: session.attached_clients > 0 }"
+            @click="tuiBridge.openSession(session.session_id, session.label)"
+          >
+            <div class="tui-bridge-card-top">
+              <span class="tui-bridge-card-name">{{ session.label }}</span>
+              <button
+                class="tui-bridge-card-kill"
+                type="button"
+                title="終止 session"
+                @click.stop="tuiBridge.killSession(session.session_id)"
+              >🗑</button>
+            </div>
+            <div class="tui-bridge-card-meta">
+              {{ session.command || 'shell' }}
+            </div>
+            <div class="tui-bridge-card-cwd" :title="session.cwd">{{ session.cwd }}</div>
+            <div class="tui-bridge-card-foot">
+              <span>{{ session.attached_clients > 0 ? '🔌 attached' : '⏸ detached' }}</span>
+              <span>{{ tuiRelativeTime(session.last_activity_at) }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
     </aside>
 
     <div
@@ -409,6 +529,22 @@
       :is-windows="terminalIsWindows"
       @close="closeTerminal(inst.id)"
     />
+    <TuiBridge
+      v-for="inst in tuiInstances"
+      :key="`tui-${inst.id}`"
+      :session-id="inst.sessionId"
+      :instance-index="inst.index"
+      :initial-label="inst.initialLabel"
+      @close="tuiBridge.closeInstance(inst.id)"
+      @terminated="tuiBridge.handleInstanceTerminated($event)"
+    />
+    <SessionDirectoryBrowserModal
+      v-if="tuiEnabled && tuiHasTmux"
+      v-model:visible="tuiDirectoryBrowserVisible"
+      :initial-path="tuiNewSessionForm.cwd"
+      :server-url="serverUrl"
+      @select="onTuiBrowsedCwdSelected"
+    />
   </div>
 </template>
 
@@ -421,6 +557,8 @@ import ChatPage from '../chat.vue'
 import PersonaEditorPanel from './PersonaEditorPanel.vue'
 import SessionDirectoryBrowserModal from './SessionDirectoryBrowserModal.vue'
 import WebTerminal from '../web-terminal/WebTerminal.vue'
+import TuiBridge from '../tui-bridge/TuiBridge.vue'
+import { useTuiBridge } from '../tui-bridge/useTuiBridge'
 import { fetchTerminalConfig, type TerminalConfig } from '../../utils/api/webTerminal'
 import { useSessionStage, type SessionStageRenderer } from '../../pages/session-stage/useSessionStage'
 import type { CharacterPersona } from '../../types/message'
@@ -797,6 +935,44 @@ const {
 const stageRootRef = ref<HTMLElement | null>(null)
 setupPortraitSwipeGesture(stageRootRef)
 
+// ---------------------------------------------------------------------
+// TUI Bridge (tmux-backed) — independent of chat-session store.
+// Lives here (rather than in useSessionStage) so the new feature surface
+// stays isolated; chat-session state/history is untouched.
+// ---------------------------------------------------------------------
+const tuiBridge = useTuiBridge({
+  defaultCwd: () => (newSessionForm.cwd || '').trim(),
+})
+
+// Extract refs the template needs so v-model bindings work cleanly without
+// inline ``.value`` access on nested ref properties.
+const {
+  enabled: tuiEnabled,
+  hasTmux: tuiHasTmux,
+  maxSessions: tuiMaxSessions,
+  loading: tuiLoading,
+  sessions: tuiSessions,
+  instances: tuiInstances,
+  newSessionOpen: tuiNewSessionOpen,
+  newSessionForm: tuiNewSessionForm,
+  creating: tuiCreating,
+  cwdSelection: tuiCwdSelection,
+  directoryBrowserVisible: tuiDirectoryBrowserVisible,
+} = tuiBridge
+
+function tuiRelativeTime(unixSeconds: number): string {
+  if (!Number.isFinite(unixSeconds) || unixSeconds <= 0) return ''
+  return relativeTime(new Date(unixSeconds * 1000).toISOString())
+}
+
+function onTuiCwdSelectionChange(): void {
+  tuiBridge.applyCwdSelection()
+}
+
+function onTuiBrowsedCwdSelected(path: string): void {
+  tuiBridge.applyBrowsedCwd(path)
+}
+
 function onBrandChange(): void {
   newSessionForm.model = ''
   applyNewSessionBrandDefaults(newSessionForm.agent_brand)
@@ -820,6 +996,8 @@ onMounted(async () => {
       terminalIsWindows.value = cfg.is_windows
     })
     .catch(() => { terminalEnabled.value = false })
+
+  void tuiBridge.initialize()
 
   vrmGlobalGroundOffset.value = loadVrmGlobalGroundOffset()
   vrmActorScale.value = loadVrmActorScale()
@@ -1082,6 +1260,205 @@ canvas {
   flex: 1;
   overflow: auto;
   padding-right: 2px;
+}
+
+/* -------------------------------------------------------------------- */
+/* TUI Bridge sidebar section                                           */
+/* -------------------------------------------------------------------- */
+.tui-bridge-section {
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.18);
+}
+
+.tui-bridge-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.tui-bridge-section-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #d7e1f6;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
+
+.tui-bridge-count {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: rgba(126, 199, 255, 0.16);
+  color: #a3c4f3;
+  font-size: 11px;
+  letter-spacing: 0.3px;
+  text-transform: none;
+  font-weight: 600;
+}
+
+.tui-bridge-section-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.tui-bridge-section-btn {
+  height: 22px;
+  padding: 0 8px;
+  font-size: 11px;
+  color: #cdd6f4;
+  background: rgba(20, 35, 60, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.tui-bridge-section-btn:hover { background: rgba(40, 60, 100, 0.85); }
+.tui-bridge-section-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.tui-bridge-new-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 6px 0 10px;
+  padding: 8px;
+  border-radius: 8px;
+  background: rgba(10, 20, 35, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.tui-bridge-input {
+  height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+  color: #cdd6f4;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  outline: none;
+}
+
+.tui-bridge-input:focus { border-color: rgba(126, 199, 255, 0.7); }
+
+.tui-bridge-cwd-row {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+
+.tui-bridge-cwd-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.tui-bridge-cwd-browse-btn {
+  flex-shrink: 0;
+  padding: 0 10px;
+  font-size: 12px;
+  color: #cdd6f4;
+  background: rgba(20, 35, 60, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.tui-bridge-cwd-browse-btn:hover { background: rgba(40, 60, 100, 0.85); }
+
+.tui-bridge-submit {
+  height: 30px;
+  font-size: 12px;
+  color: #fff;
+  background: linear-gradient(135deg, #406090, #2d5378);
+  border: 1px solid rgba(126, 199, 255, 0.4);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.tui-bridge-submit:hover:not(:disabled) { filter: brightness(1.15); }
+.tui-bridge-submit:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.tui-bridge-empty {
+  font-size: 11px;
+  color: #8a93ab;
+  padding: 6px 4px;
+  font-style: italic;
+}
+
+.tui-bridge-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tui-bridge-card {
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(10, 20, 35, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  cursor: pointer;
+  transition: transform 0.12s ease, border-color 0.12s ease;
+}
+
+.tui-bridge-card:hover { transform: translateY(-1px); border-color: rgba(126, 199, 255, 0.5); }
+.tui-bridge-card.attached { border-color: rgba(141, 238, 182, 0.65); }
+
+.tui-bridge-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.tui-bridge-card-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: #e5edf9;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+.tui-bridge-card-kill {
+  background: none;
+  border: none;
+  color: #a6adc8;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.tui-bridge-card-kill:hover { background: rgba(120, 40, 40, 0.5); color: #fab387; }
+
+.tui-bridge-card-meta {
+  margin-top: 3px;
+  font-size: 11px;
+  color: #a3c4f3;
+  font-family: "Cascadia Code", Menlo, Monaco, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tui-bridge-card-cwd {
+  margin-top: 2px;
+  font-size: 10px;
+  color: #8a93ab;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tui-bridge-card-foot {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  font-size: 10px;
+  color: #8a93ab;
 }
 
 .session-card {
