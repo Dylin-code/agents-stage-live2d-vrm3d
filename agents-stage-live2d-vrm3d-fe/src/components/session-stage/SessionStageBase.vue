@@ -29,14 +29,6 @@
       >
         🎭 導演
       </button>
-      <button
-        v-if="terminalEnabled"
-        class="stage-view-switch"
-        type="button"
-        @click="openNewTerminal"
-      >
-        Terminal {{ terminalInstances.length ? `(${terminalInstances.length}/${terminalMaxSessions})` : '' }}
-      </button>
     </div>
 
     <div class="role-settings-panel" :class="{ collapsed: roleSettingsCollapsed }">
@@ -522,13 +514,6 @@
         />
       </div>
     </div>
-    <WebTerminal
-      v-for="inst in terminalInstances"
-      :key="inst.id"
-      :instance-index="inst.index"
-      :is-windows="terminalIsWindows"
-      @close="closeTerminal(inst.id)"
-    />
     <TuiBridge
       v-for="inst in tuiInstances"
       :key="`tui-${inst.id}`"
@@ -556,10 +541,8 @@ import { message, Modal } from 'ant-design-vue'
 import ChatPage from '../chat.vue'
 import PersonaEditorPanel from './PersonaEditorPanel.vue'
 import SessionDirectoryBrowserModal from './SessionDirectoryBrowserModal.vue'
-import WebTerminal from '../web-terminal/WebTerminal.vue'
 import TuiBridge from '../tui-bridge/TuiBridge.vue'
 import { useTuiBridge } from '../tui-bridge/useTuiBridge'
-import { fetchTerminalConfig, type TerminalConfig } from '../../utils/api/webTerminal'
 import { useSessionStage, type SessionStageRenderer } from '../../pages/session-stage/useSessionStage'
 import type { CharacterPersona } from '../../types/message'
 import type { SessionSnapshotItem } from '../../types/sessionState'
@@ -617,27 +600,6 @@ const frontendConfigFileInput = ref<HTMLInputElement | null>(null)
 const personaEditorVisible = ref(false)
 const personaEditorDrafts = ref<CharacterPersona[]>([])
 const directoryBrowserVisible = ref(false)
-const terminalEnabled = ref(false)
-const terminalMaxSessions = ref(2)
-const terminalIsWindows = ref(false)
-const terminalInstances = ref<{ id: number; index: number }[]>([])
-let terminalNextId = 0
-let terminalNextIndex = 0
-
-function openNewTerminal() {
-  if (terminalInstances.value.length >= terminalMaxSessions.value) {
-    message.warning(`已達終端上限 (${terminalMaxSessions.value})`)
-    return
-  }
-  terminalNextId++
-  terminalNextIndex++
-  terminalInstances.value.push({ id: terminalNextId, index: terminalNextIndex })
-}
-
-function closeTerminal(id: number) {
-  terminalInstances.value = terminalInstances.value.filter((t) => t.id !== id)
-}
-
 const vrmGlobalGroundOffsetLabel = computed(() => `${(vrmGlobalGroundOffset.value * 100).toFixed(1)} cm`)
 const vrmActorScaleLabel = computed(() => `${Math.round(vrmActorScale.value * 100)}%`)
 
@@ -988,14 +950,6 @@ onMounted(async () => {
   } catch (error) {
     console.error('Failed to bootstrap default frontend config', error)
   }
-
-  fetchTerminalConfig()
-    .then((cfg) => {
-      terminalEnabled.value = cfg.enabled
-      terminalMaxSessions.value = cfg.max_sessions
-      terminalIsWindows.value = cfg.is_windows
-    })
-    .catch(() => { terminalEnabled.value = false })
 
   void tuiBridge.initialize()
 

@@ -1,9 +1,6 @@
 /**
- * TUI Bridge API helpers.
- *
- * Mirrors the shape of ``webTerminal.ts`` so the floating window component
- * can stay close in structure to ``WebTerminal.vue``. Talks to the backend
- * router registered in ``live2d_server/tui_bridge_api.py``.
+ * TUI Bridge API helpers — talks to the backend router registered in
+ * ``live2d_server/tui_bridge_api.py``.
  */
 import { getDefaultServerUrl } from '../serverUrl'
 

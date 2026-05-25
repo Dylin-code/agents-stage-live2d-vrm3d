@@ -6,6 +6,11 @@ restarts, and detach/attach cycles). This module owns the *metadata*
 sidecar that tmux does not track (label, command, created_at) and exposes
 a small CRUD surface used by ``tui_bridge_api``.
 
+Platform note: on Windows we expect `psmux <https://github.com/maara/psmux>`_
+which installs a ``tmux.exe`` alias and supports the small CLI surface
+this module relies on (``new-session -d``, ``list-sessions -F``,
+``has-session``, ``kill-session``). Verified against psmux 3.3.3.
+
 Design notes
 ------------
 * tmux is the single source of truth for *which sessions exist*. The
@@ -54,12 +59,62 @@ def _default_command() -> str:
     """Default command to run when the user does not specify one.
 
     Empty / unset → spawn an interactive login shell (matches what xterm does).
+    Windows: prefer pwsh 7 → Windows PowerShell 5 → cmd; ``-l`` does not apply.
     """
     cmd = os.getenv("TUI_BRIDGE_DEFAULT_CMD", "").strip()
     if cmd:
         return cmd
+    if os.name == "nt":
+        return _default_windows_command()
     shell = os.environ.get("SHELL", "/bin/bash")
     return f"{shell} -l"
+
+
+def _default_windows_command() -> str:
+    """Locate a sensible Windows shell to feed ``tmux new-session``.
+
+    Order:
+      1. MSI-installed pwsh under ``C:\\Program Files\\PowerShell\\7``
+      2. User App-Execution-Alias shim under
+         ``%LOCALAPPDATA%\\Microsoft\\WindowsApps\\pwsh.exe``
+      3. ``shutil.which("pwsh")`` — but skip
+         ``Program Files\\WindowsApps\\Microsoft.PowerShell_*`` paths
+         because psmux fails to attach to sessions running pwsh from
+         that protected ``WindowsApps`` install dir (manifests as
+         ``PTY EOF`` immediately after attach). pwsh-launched shells
+         prepend that dir to PATH, which is why this only bit users
+         who started ``make dev`` from pwsh.
+      4. Windows PowerShell 5.1
+      5. cmd.exe
+    """
+    def _q(p: str) -> str:
+        return f'"{p}" -NoLogo' if " " in p else f"{p} -NoLogo"
+
+    msi_paths = [
+        r"C:\Program Files\PowerShell\7\pwsh.exe",
+        r"C:\Program Files\PowerShell\7-preview\pwsh.exe",
+        os.path.expandvars(r"%ProgramFiles%\PowerShell\7\pwsh.exe"),
+        os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\PowerShell\7\pwsh.exe"),
+    ]
+    for path in msi_paths:
+        if path and os.path.isfile(path):
+            return _q(path)
+
+    shim = os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WindowsApps\pwsh.exe")
+    if os.path.isfile(shim):
+        return _q(shim)
+
+    pwsh = shutil.which("pwsh")
+    if pwsh and "program files\\windowsapps\\microsoft.powershell_" not in pwsh.lower():
+        return _q(pwsh)
+
+    ps = os.path.join(
+        os.environ.get("SystemRoot", r"C:\Windows"),
+        "System32", "WindowsPowerShell", "v1.0", "powershell.exe",
+    )
+    if os.path.isfile(ps):
+        return _q(ps)
+    return os.environ.get("COMSPEC", "cmd.exe")
 
 
 def _sidecar_path() -> Path:
@@ -94,15 +149,67 @@ class TuiSessionInfo:
 # tmux shell-out helpers
 # ---------------------------------------------------------------------------
 
+_TMUX_PATH_OVERRIDE = "TUI_BRIDGE_TMUX_PATH"
+
+
+def _resolve_tmux_path() -> str | None:
+    """Return an absolute path to tmux/psmux, or None if nowhere to be found.
+
+    Probes in order:
+      1. ``TUI_BRIDGE_TMUX_PATH`` env override
+      2. ``shutil.which("tmux")`` then ``shutil.which("psmux")`` (PATH lookup)
+      3. Windows-only WinGet package locations (covers the case where the
+         WinGet shim isn't on PATH because the launching shell pre-dated
+         install, or PATH was trimmed by Make / VS Code terminal / etc.)
+    """
+    override = os.getenv(_TMUX_PATH_OVERRIDE, "").strip()
+    if override and os.path.isfile(override):
+        return override
+
+    for name in ("tmux", "psmux"):
+        found = shutil.which(name)
+        if found:
+            return found
+
+    if os.name == "nt":
+        # WinGet installs to a versioned package directory; glob to find it.
+        bases = [
+            os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WinGet\Packages"),
+            os.path.expandvars(r"%ProgramFiles%\WinGet\Packages"),
+        ]
+        for base in bases:
+            base_path = Path(base)
+            if not base_path.is_dir():
+                continue
+            for exe_name in ("tmux.exe", "psmux.exe"):
+                for hit in base_path.glob(f"marlocarlo.psmux_*/{exe_name}"):
+                    return str(hit)
+    return None
+
+
 def tmux_available() -> bool:
-    return shutil.which("tmux") is not None
+    return _resolve_tmux_path() is not None
+
+
+def _tmux_env() -> dict[str, str]:
+    """Build the env we pass to every tmux invocation.
+
+    psmux uses ``HOME`` for server-pipe discovery; Git Bash sets it but
+    PowerShell-via-Make chains may not. Default it from USERPROFILE so
+    every tmux call (create, list, attach) sees the same pipe namespace.
+    """
+    env = dict(os.environ)
+    if "HOME" not in env and "USERPROFILE" in env:
+        env["HOME"] = env["USERPROFILE"]
+    return env
 
 
 def _run_tmux(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess:
     """Run a tmux command with safe defaults and a short timeout."""
-    if not tmux_available():
+    tmux_path = _resolve_tmux_path()
+    if tmux_path is None:
         raise TuiBridgeError("tmux is not installed on this host")
-    cmd = ["tmux", *args]
+    cmd = [tmux_path, *args]
     try:
         return subprocess.run(
             cmd,
@@ -110,6 +217,7 @@ def _run_tmux(args: list[str], *, check: bool = True) -> subprocess.CompletedPro
             text=True,
             timeout=_TMUX_TIMEOUT_SEC,
             check=check,
+            env=_tmux_env(),
         )
     except subprocess.CalledProcessError as exc:
         logger.debug("tmux %s failed: rc=%s stderr=%s", args, exc.returncode, exc.stderr)
@@ -173,10 +281,20 @@ class TuiSessionManager:
         return results
 
     def has_session(self, session_id: str) -> bool:
+        """Return True if a live tmux session with this id exists.
+
+        Implemented via ``list-sessions`` rather than ``has-session`` because
+        psmux on Windows occasionally returns rc!=0 from ``has-session``
+        for sessions that ``list-sessions`` *does* report (observed under
+        the bridge's create→attach flow). list-sessions is the source of
+        truth we already trust for the REST list endpoint, so reuse it.
+        """
         if not _SESSION_ID_RE.match(session_id):
             return False
-        result = _run_tmux(["has-session", "-t", session_id], check=False)
-        return result.returncode == 0
+        try:
+            return any(s["session_id"] == session_id for s in self._list_tmux_sessions())
+        except Exception:  # noqa: BLE001 — treat any tmux failure as "not visible"
+            return False
 
     def create_session(
         self,

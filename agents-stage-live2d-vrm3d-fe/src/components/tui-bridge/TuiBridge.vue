@@ -70,7 +70,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import { resolveTuiBridgeWsUrl, killTuiSession } from '../../utils/api/tuiBridge'
-import { themeNames, getTheme, loadThemeName, saveThemeName } from '../web-terminal/terminalThemes'
+import { themeNames, getTheme, loadThemeName, saveThemeName } from './terminalThemes'
 import TuiKeyToolbar from './TuiKeyToolbar.vue'
 
 const POSITION_OFFSET = 30

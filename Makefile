@@ -27,7 +27,7 @@ build-all: build-h5
 dev:
 	@echo "Local mode: http://127.0.0.1:$(VITE_BACKEND_PORT) (backend) + http://127.0.0.1:$(VITE_FRONTEND_PORT) (frontend)"
 	@trap 'kill 0' INT TERM EXIT; \
-	( cd agents-stage-live2d-vrm3d-server && PYTHONUNBUFFERED=1 $(VENV_PYTHON) main.py --host $(VITE_BACKEND_HOST) --port $(VITE_BACKEND_PORT) 2>&1 ) & \
+	( cd agents-stage-live2d-vrm3d-server && PYTHONUNBUFFERED=1 $(VENV_PYTHON) main.py --host $(VITE_BACKEND_HOST) --port $(VITE_BACKEND_PORT) --reload 2>&1 ) & \
 	( cd agents-stage-live2d-vrm3d-fe && npm run dev ) & \
 	( if [ "$(WIDGET_AUTOSTART)" = "true" ]; then \
 		while ! curl -sS "http://127.0.0.1:$(VITE_FRONTEND_PORT)/desktop-widget" >/dev/null 2>&1; do sleep 1; done; \

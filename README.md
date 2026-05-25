@@ -9,39 +9,45 @@
 
 目前專案重心是 `Codex Session` 與 `Claude Code` 這類本地 agent CLI 的視覺化調度與舞台化呈現。
 
-## 重要更新：Web Terminal（2026-04-16）
+## 重要更新：TUI Bridge（2026-05-25，取代舊 Web Terminal）
 
-新增 Web Terminal 功能，可直接在前端網頁上開啟一個懸浮、可拖曳、可縮放的終端機視窗，透過 WebSocket 連線到後端主機的 shell。
+舊 Web Terminal（單純把 shell PTY 直送 xterm.js）已下架，改由 **TUI Bridge** 取代：每條前端終端視窗背後接的是一個 **tmux session**，session 由 backend 透過 tmux/psmux 維持壽命，跟 WebSocket 解耦。
 
-### 功能說明
+### 跟舊版的差別
 
-- 前端使用 `xterm.js` 渲染終端畫面，後端透過 PTY 建立真實 shell session
-- 終端視窗懸浮於所有 UI 元件之上，可自由拖曳與縮放
-- 支援重新連線（建立新 shell session）與隱藏後保持連線
-- 跨平台支援：
-  - **macOS / Linux**：使用 Python 標準庫 `pty.fork()` + `select`
-  - **Windows**：使用 `pywinpty`（需額外安裝：`uv add pywinpty`）
+- **可 detach / 重新 attach**：關掉瀏覽器視窗只切斷 WebSocket，session 內的進程繼續活著；之後從 sessions 列表點同一個 id 又能接回去，xterm.js 拿到完整歷史輸出
+- **能跑互動式 TUI**：tmux + alternate screen + bracketed paste / mouse 都正常，可以在裡面跑 `claude`、`codex`、`vim`、`btop` 這類重型 TUI
+- **支援多 session**：每個 session 是獨立的 tmux instance，由前端右下角面板管理
+- **跨平台**：
+  - macOS / Linux：標準 `tmux` + Python `pty.fork()`
+  - Windows：`psmux`（tmux for Windows，提供 `tmux.exe` 別名）+ `pywinpty`
 
 ### 環境變數
 
 | 變數 | 預設值 | 說明 |
 |---|---|---|
-| `WEB_TERMINAL_ENABLED` | `false` | 設為 `true` 啟用 Web Terminal |
-| `WEB_TERMINAL_MAX_SESSIONS` | `2` | 同時允許開啟的最大終端數量 |
+| `TUI_BRIDGE_ENABLED` | `false` | 設 `true` 啟用，前端右下面板才會出現 |
+| `TUI_BRIDGE_MAX_SESSIONS` | `8` | 同時可存在的 tmux session 上限 |
+| `TUI_BRIDGE_DEFAULT_CMD` | _(空)_ | 留空：Unix 用 `$SHELL -l`，Windows 用 pwsh / powershell |
+| `TUI_BRIDGE_METADATA_PATH` | _(空)_ | label / cwd / created_at sidecar 路徑（預設 `~/.cache/agents-stage-live2d-vrm3d/tui-sessions.json`） |
+| `TUI_BRIDGE_TMUX_PATH` | _(空)_ | 手動指定 tmux/psmux 絕對路徑（PATH 找不到時的逃生口） |
 
 ### API 端點
 
-- `GET /api/terminal/config` — 查詢功能是否啟用、上限與目前使用數
-- `WS /api/terminal/ws?cols=80&rows=24`
+- `GET    /api/tui/config` — 回 `{enabled, has_tmux, max_sessions, active_sessions}`
+- `GET    /api/tui/sessions` — 列出現存 tmux session（含 label / cwd / command / 連線數）
+- `POST   /api/tui/sessions` — 新建一個 session（payload：`{label, cwd, command}`）
+- `DELETE /api/tui/sessions/{id}` — kill 指定 session
+- `WS     /api/tui/ws?session_id=<id>&cols=&rows=` — attach 到指定 session
 
 ### 安全警語
 
 > **此功能等同於將後端主機的完整 shell 暴露至瀏覽器。**
 >
-> - **預設關閉**：須在 `.env` 明確設定 `WEB_TERMINAL_ENABLED=true` 才會啟用，前端按鈕也會隨之顯示。
-> - **Local 模式**：僅限本機存取，風險較低，但仍請注意不要在公開網路上啟動未受保護的 local 模式。
-> - **Remote 模式**：WebSocket 連線受現有 JWT 認證保護，僅已登入且在 email 白名單內的使用者可存取。但本質上仍是遠端 shell，請務必確保 HTTPS 傳輸加密、嚴格控管白名單，並避免在不受信任的網路環境下使用。
-> - 本功能不提供指令過濾或權限隔離機制，連線使用者擁有與後端執行身分相同的 shell 權限。
+> - **預設關閉**：須在 `.env` 設 `TUI_BRIDGE_ENABLED=true` 才啟用。
+> - **Local 模式**：僅限本機存取，仍請注意不要在公開網路上啟動未受保護的 local 模式。
+> - **Remote 模式**：WebSocket 受現有 JWT 認證保護，但本質仍是遠端 shell —— 嚴格控管 email 白名單、必走 HTTPS、避免在不受信任網路使用。
+> - 跟舊 Web Terminal 不同的是，session **跨連線存活**：使用者離線後 session 仍在後端運行，須透過 DELETE API 主動 kill 才會釋放。
 
 ## 重要更新：總控 Agent（2026-05-13）
 
@@ -592,7 +598,7 @@ Electron 預設載入 `http://127.0.0.1:5173/desktop-widget`，視窗為透明�
 - `GET /api/session-bridge/agent/brands`
 - `GET /api/session-bridge/fs/directories`
 - `WS /api/session-bridge/ws`
-- `WS /api/terminal/ws` — Web Terminal（見重要更新章節）
+- `GET /api/tui/sessions`、`POST /api/tui/sessions`、`DELETE /api/tui/sessions/{id}`、`WS /api/tui/ws` — TUI Bridge（見重要更新章節）
 
 如果你要把這個專案接到其他前端或自動化流程，優先從這組 API 開始整合。
 

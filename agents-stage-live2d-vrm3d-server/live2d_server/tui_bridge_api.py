@@ -158,6 +158,9 @@ async def kill_session(session_id: str) -> TuiKillResponse:
 @router.websocket("/ws")
 async def tui_ws(ws: WebSocket) -> None:
     if not _is_enabled():
+        # Accept-then-close so the frontend sees code 4403 instead of an
+        # opaque HTTP 403 reject (Starlette's default for pre-accept close).
+        await ws.accept()
         await ws.close(code=4403, reason="TUI bridge is disabled")
         return
     await run_ws_session(ws)

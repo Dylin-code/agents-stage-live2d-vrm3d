@@ -3,6 +3,10 @@
  *
  * Each theme is a plain object whose keys match xterm.js ITheme
  * (foreground, background, cursor, black … brightWhite).
+ *
+ * NOTE: the localStorage key is intentionally still ``web-terminal-theme``
+ * to preserve user-selected themes carried over from the old WebTerminal
+ * component this module used to live next to.
  */
 
 // @ts-expect-error — untyped JS package

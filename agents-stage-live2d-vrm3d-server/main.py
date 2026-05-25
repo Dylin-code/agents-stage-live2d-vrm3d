@@ -25,7 +25,6 @@ from live2d_server.master_agent.telegram import start_telegram_bot, stop_telegra
 from live2d_server.session_bridge import router as session_bridge_router
 from live2d_server.session_bridge import start_session_bridge, stop_session_bridge
 from live2d_server.tui_bridge_api import router as tui_bridge_router
-from live2d_server.web_terminal import router as terminal_router
 
 class SPAStaticFiles(StaticFiles):
     """SPA-friendly static files: serves index.html for any path without a matching file."""
@@ -59,7 +58,6 @@ async def lifespan(app: FastAPI):
     app.include_router(rag_router)
     app.include_router(session_bridge_router)
     app.include_router(master_agent_router)
-    app.include_router(terminal_router)
     app.include_router(tui_bridge_router)
 
     # Remote mode: mount auth router
@@ -203,6 +201,8 @@ def main():
     parser.add_argument('--mode', choices=['local', 'remote'], default='local',
                         help='local: 無驗證 (預設), remote: Google OAuth2 驗證')
     parser.add_argument('--config', type=str, default=None, help='配置檔案路徑 (JSON)')
+    parser.add_argument('--reload', action='store_true',
+                        help='開啟 uvicorn 自動 reload（dev 用，僅監看 live2d_server/ 與 main.py）')
     args = parser.parse_args()
 
     global static_path
@@ -211,6 +211,26 @@ def main():
     config = _load_config(args.config)
     if args.mode == "remote":
         config = _ensure_jwt_secret(config, args.config)
+
+    if args.reload:
+        # Reload mode re-imports ``main:app`` on each file change, so it
+        # only honours the module-level ``app = create_app()`` defaults
+        # (local mode, no static-path, no config file). For remote / custom
+        # config, drop --reload and restart manually.
+        if args.mode != "local" or args.static_path or args.config:
+            logger.warning(
+                "--reload only supports local mode with default config; "
+                "ignoring --mode/--static-path/--config in reload mode",
+            )
+        watch_dir = str(Path(__file__).resolve().parent / "live2d_server")
+        uvicorn.run(
+            "main:app",
+            host=args.host,
+            port=args.port,
+            reload=True,
+            reload_dirs=[watch_dir, str(Path(__file__).resolve().parent)],
+        )
+        return
 
     app = create_app(mode=args.mode, config=config)
     uvicorn.run(app, host=args.host, port=args.port)
