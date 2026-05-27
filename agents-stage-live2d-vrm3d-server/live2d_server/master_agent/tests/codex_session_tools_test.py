@@ -75,10 +75,8 @@ class CodexNewSessionToolTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(codex_service.create_calls[0]["cwd"], "/tmp/repo")
         self.assertEqual(codex_service.create_calls[0]["model"], "gpt-5")
 
-    async def test_omitted_permission_mode_defaults_to_auto(self) -> None:
-        """Master agent's default permission_mode is now 'auto'
-        (auto-review classifier), not whatever the platform legacy
-        path would pick."""
+    async def test_omitted_permission_mode_defaults_to_default(self) -> None:
+        """Master agent's Codex default follows the provider default path."""
         codex_service = _FakeService(brand="codex")
         provider = _FakeProvider({"codex": codex_service})
         services = SimpleNamespace(
@@ -88,9 +86,9 @@ class CodexNewSessionToolTest(unittest.IsolatedAsyncioTestCase):
         )
         result = await CodexNewSessionTool().invoke(_ctx({"cwd": "/tmp"}, services=services))
         self.assertTrue(result.ok)
-        self.assertEqual(codex_service.create_calls[0]["permission_mode"], "auto")
+        self.assertEqual(codex_service.create_calls[0]["permission_mode"], "default")
 
-    async def test_explicit_full_downgrades_to_auto_without_permit(self) -> None:
+    async def test_explicit_full_downgrades_to_default_without_permit(self) -> None:
         """Security: the LLM cannot unilaterally pick full access."""
         codex_service = _FakeService(brand="codex")
         provider = _FakeProvider({"codex": codex_service})
@@ -103,7 +101,7 @@ class CodexNewSessionToolTest(unittest.IsolatedAsyncioTestCase):
             _ctx({"cwd": "/tmp", "permission_mode": "full"}, services=services),
         )
         self.assertTrue(result.ok)
-        self.assertEqual(codex_service.create_calls[0]["permission_mode"], "auto")
+        self.assertEqual(codex_service.create_calls[0]["permission_mode"], "default")
 
     async def test_explicit_full_honored_when_permit_set(self) -> None:
         """When the user typed #full and the API forwarded

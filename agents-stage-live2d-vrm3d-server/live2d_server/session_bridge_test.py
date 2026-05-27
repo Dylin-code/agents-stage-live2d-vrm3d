@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi import HTTPException
 
+from live2d_server.session_bridge_shared import _format_subprocess_spawn_error
 from live2d_server.session_bridge import (
     AgentAbortRequest,
     AgentChatApprovalRequest,
@@ -40,6 +41,15 @@ from live2d_server.session_bridge import (
 )
 
 EXPECTED_CODEX_AUTOMATION_SANDBOX = "danger-full-access" if sys.platform == "win32" else "workspace-write"
+
+
+class SubprocessSpawnErrorFormattingTest(unittest.TestCase):
+    def test_windows_selector_loop_not_implemented_error_is_actionable(self) -> None:
+        detail = _format_subprocess_spawn_error(NotImplementedError())
+        if sys.platform == "win32":
+            self.assertIn("WindowsProactorEventLoopPolicy", detail)
+        else:
+            self.assertEqual(detail, "NotImplementedError")
 
 
 class _Completed:

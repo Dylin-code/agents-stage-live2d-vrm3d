@@ -144,6 +144,8 @@
 
 **Resume**：沒有專屬 `resume_*` 工具 — `codex_send_prompt` / `claude_send_prompt` 對歷史 session_id 自動續聊（CLI 內建 `resume`）。流程：`list_history_sessions` → 挑 session_id → 可選 `get_session_conversation` 看上下文 → `*_send_prompt` 帶該 session_id 派新 prompt。
 
+**Windows async subprocess**：Codex / Claude worker 由 backend 透過 `asyncio.create_subprocess_exec` 啟動。Windows 必須使用 `WindowsProactorEventLoopPolicy`，否則 Selector loop 會丟出空字串 `NotImplementedError`，導致導演只看到 `*_create_session failed:`。`main.py` 會在啟動時強制設定 Proactor policy，bridge 也會把 subprocess spawn 失敗轉成可診斷訊息。
+
 **等待 / 控制平面**
 - `wait_for_subtask(subtask_id, timeout_sec=60)` — 阻塞至子任務 done/failed/aborted 或 timeout，把進度事件透穿到主 SSE
 - `abort_session(session_id, agent_brand)` — 強殺 codex/claude subprocess

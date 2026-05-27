@@ -1,14 +1,31 @@
 import argparse
+import asyncio
 import json
 import logging
 import os
 import secrets
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv as _load_dotenv
 
 _load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
+
+
+def _ensure_windows_asyncio_subprocess_policy() -> None:
+    """Windows async subprocesses require the Proactor event loop."""
+    if sys.platform != "win32":
+        return
+    policy_cls = getattr(asyncio, "WindowsProactorEventLoopPolicy", None)
+    if policy_cls is None:
+        return
+    if isinstance(asyncio.get_event_loop_policy(), policy_cls):
+        return
+    asyncio.set_event_loop_policy(policy_cls())
+
+
+_ensure_windows_asyncio_subprocess_policy()
 
 import uvicorn
 from fastapi import FastAPI
