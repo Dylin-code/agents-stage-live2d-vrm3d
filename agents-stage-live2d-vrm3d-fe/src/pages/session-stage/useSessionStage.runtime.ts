@@ -104,6 +104,7 @@ const conversationSyncRunning = new Set<string>()
 const conversationSyncQueued = new Set<string>()
 
 let app: PIXI.Application | null = null
+let stageVisibilityHandler: (() => void) | null = null
 let ws: WebSocket | null = null
 let reconnectTimer: number | null = null
 let reconnectAttempt = 0
@@ -1060,8 +1061,19 @@ onMounted(async () => {
       backgroundAlpha: 0,
     })
     app.stage.sortableChildren = true
+    app.ticker.maxFPS = 30
     app.ticker.add(renderTick)
     stageCanvas.value.addEventListener('contextmenu', onCanvasContextMenu)
+
+    stageVisibilityHandler = () => {
+      if (!app) return
+      if (document.hidden) {
+        app.ticker.stop()
+      } else {
+        app.ticker.start()
+      }
+    }
+    document.addEventListener('visibilitychange', stageVisibilityHandler)
   }
 
   // 先把上次離開時保存的 agent 設定撈進來，再去 fetch history；
@@ -1102,6 +1114,10 @@ onUnmounted(() => {
   window.removeEventListener('resize', onWindowResize)
   if (stageCanvas.value) {
     stageCanvas.value.removeEventListener('contextmenu', onCanvasContextMenu)
+  }
+  if (stageVisibilityHandler) {
+    document.removeEventListener('visibilitychange', stageVisibilityHandler)
+    stageVisibilityHandler = null
   }
   if (app) {
     app.destroy(true)

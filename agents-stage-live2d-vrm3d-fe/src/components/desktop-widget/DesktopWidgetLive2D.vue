@@ -40,6 +40,7 @@ let disposed = false
 let lastMotionKey = ''
 let layoutWarmupTicks = 0
 let idleMotionTimer: number | null = null
+let visibilityHandler: (() => void) | null = null
 let nextIdleMotionAt = 0
 
 Live2DModelCubism4.registerTicker(PIXI.Ticker)
@@ -207,11 +208,21 @@ onMounted(() => {
     backgroundAlpha: 0,
   })
   app.stage.sortableChildren = true
+  app.ticker.maxFPS = 30
   app.ticker.add(() => {
     if (layoutWarmupTicks <= 0) return
     layoutWarmupTicks -= 1
     layoutModel()
   })
+  visibilityHandler = () => {
+    if (!app) return
+    if (document.hidden) {
+      app.ticker.stop()
+    } else {
+      app.ticker.start()
+    }
+  }
+  document.addEventListener('visibilitychange', visibilityHandler)
   window.addEventListener('resize', resizeRenderer)
   resizeRenderer()
   idleMotionTimer = window.setInterval(() => {
@@ -222,6 +233,10 @@ onMounted(() => {
 
 onUnmounted(() => {
   disposed = true
+  if (visibilityHandler) {
+    document.removeEventListener('visibilitychange', visibilityHandler)
+    visibilityHandler = null
+  }
   window.removeEventListener('resize', resizeRenderer)
   if (idleMotionTimer !== null) {
     window.clearInterval(idleMotionTimer)

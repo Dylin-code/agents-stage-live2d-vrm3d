@@ -198,6 +198,8 @@ export function useVrmStage(options: UseVrmStageOptions) {
   let cameraViewSaveTimer: number | null = null
   let frameAccumulator = 0
   let destroyed = false
+  let paused = false
+  let visibilityHandler: (() => void) | null = null
   let stageSceneRoot: THREE.Object3D | null = null
   let stageSeatCenter: THREE.Vector3 | null = null
   let stageSeatSpread = { x: 1.1, z: 0.7 }
@@ -1336,6 +1338,15 @@ export function useVrmStage(options: UseVrmStageOptions) {
     return actor
   }
 
+  // 釋放 actor 的 VRM：vrm.dispose() 只清 VRM 管理器（spring bone / 表情等），
+  // 不會釋放 mesh 的 geometry/material/texture，必須再用 deepDispose 才能真正回收 GPU 記憶體。
+  // 每個 actor 都是獨立 load（貼圖不共用），逐一釋放安全。
+  function disposeActorVrm(actor: VrmActor): void {
+    scene?.remove(actor.root)
+    VRMUtils.deepDispose(actor.vrm.scene)
+    actor.vrm.dispose?.()
+  }
+
   async function removeActor(actor: VrmActor): Promise<void> {
     const idx = actors.findIndex((item) => item.sessionId === actor.sessionId)
     if (idx >= 0) {
@@ -1354,8 +1365,7 @@ export function useVrmStage(options: UseVrmStageOptions) {
     actor.jumpStartedAt = 0
     actor.jumpDuration = 0
     actor.jumpResumeBehavior = null
-    scene?.remove(actor.root)
-    actor.vrm.dispose?.()
+    disposeActorVrm(actor)
   }
 
   async function replaceOldestActorWithSession(session: SessionSnapshotItem, triggerJump = false): Promise<void> {
@@ -1567,6 +1577,8 @@ export function useVrmStage(options: UseVrmStageOptions) {
     controls.target.set(0, 1.15, 0)
     controls.update()
 
+    // 快取已下載的模型檔，重複 summon 同款 VRM 時略過重新抓取（仍會各自 parse 出獨立實例）
+    THREE.Cache.enabled = true
     loader = new GLTFLoader()
     loader.register((parser) => new VRMLoaderPlugin(parser))
     loader.register((parser) => new VRMAnimationLoaderPlugin(parser))
@@ -1607,7 +1619,7 @@ export function useVrmStage(options: UseVrmStageOptions) {
     await syncActorsWithSessions()
 
     const tick = () => {
-      if (destroyed) return
+      if (destroyed || paused) return
       animationFrameId = window.requestAnimationFrame(tick)
       const delta = clock.getDelta()
       frameAccumulator += delta
@@ -1635,6 +1647,24 @@ export function useVrmStage(options: UseVrmStageOptions) {
         labelRenderer?.render(scene, camera)
       }
     }
+
+    visibilityHandler = () => {
+      if (destroyed) return
+      if (document.hidden) {
+        paused = true
+        if (animationFrameId !== null) {
+          window.cancelAnimationFrame(animationFrameId)
+          animationFrameId = null
+        }
+      } else if (paused) {
+        paused = false
+        clock.getDelta() // 丟棄背景期間累積的時間差，避免回前景時動畫瞬跳
+        frameAccumulator = 0
+        tick()
+      }
+    }
+    document.addEventListener('visibilitychange', visibilityHandler)
+
     tick()
   }
 
@@ -1647,6 +1677,10 @@ export function useVrmStage(options: UseVrmStageOptions) {
     window.removeEventListener('resize', onResize)
     window.removeEventListener('keydown', onKeyDown)
     window.removeEventListener('session-stage:sidebar-session-click', handleSidebarSessionClick as EventListener)
+    if (visibilityHandler) {
+      document.removeEventListener('visibilitychange', visibilityHandler)
+      visibilityHandler = null
+    }
     renderer?.domElement.removeEventListener('pointerdown', onPointerDown)
     controls?.removeEventListener('change', handleControlsChange)
     if (cameraViewSaveTimer !== null) {
@@ -1663,25 +1697,11 @@ export function useVrmStage(options: UseVrmStageOptions) {
       actor.currentAction?.stop()
       clearJumpFinishHandler(actor)
       cleanupActorHeadLabel(actor)
-      scene?.remove(actor.root)
-      actor.vrm.dispose?.()
+      disposeActorVrm(actor)
     }
     if (stageSceneRoot) {
       scene?.remove(stageSceneRoot)
-      stageSceneRoot.traverse((node) => {
-        const mesh = node as THREE.Mesh
-        if (mesh.geometry) {
-          mesh.geometry.dispose()
-        }
-        if (!mesh.material) {
-          return
-        }
-        if (Array.isArray(mesh.material)) {
-          mesh.material.forEach((material) => material.dispose())
-        } else {
-          mesh.material.dispose()
-        }
-      })
+      VRMUtils.deepDispose(stageSceneRoot)
       stageSceneRoot = null
     }
     clearRouteVisuals()
