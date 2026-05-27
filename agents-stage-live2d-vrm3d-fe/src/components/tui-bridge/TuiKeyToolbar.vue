@@ -9,10 +9,7 @@
       :class="{ pressed: pressedId === key.id }"
       :title="key.title"
       @mousedown.prevent
-      @pointerdown.prevent="onPress(key)"
-      @pointerup="onRelease"
-      @pointerleave="onRelease"
-      @pointercancel="onRelease"
+      @click="onPress(key)"
     >{{ key.label }}</button>
   </div>
 </template>
@@ -71,14 +68,19 @@ const emit = defineEmits<{
 const visibleKeys = computed(() => (props.expanded ? KEYS : KEYS.filter((k) => !k.extra)))
 
 const pressedId = ref<string | null>(null)
+let pressedTimer: number | null = null
 
 function onPress(key: KeyDef) {
+  // Fired on ``click`` (real tap) rather than ``pointerdown.prevent`` so
+  // horizontal swipes for scrolling the toolbar don't accidentally send
+  // keys. Visual press feedback decays via timer instead of pointerup.
   pressedId.value = key.id
+  if (pressedTimer !== null) window.clearTimeout(pressedTimer)
+  pressedTimer = window.setTimeout(() => {
+    pressedId.value = null
+    pressedTimer = null
+  }, 140)
   emit('send', key.bytes)
-}
-
-function onRelease() {
-  pressedId.value = null
 }
 </script>
 
@@ -88,7 +90,10 @@ function onRelease() {
   flex-wrap: nowrap;
   gap: 4px;
   padding: 6px 8px;
-  background: #232639;
+  /* --tui-opacity is set on the TuiBridge container; falls back to 1 when
+     the toolbar is mounted standalone. Keeps the whole window translucent
+     together so the character behind shows through uniformly. */
+  background: rgba(35, 38, 57, var(--tui-opacity, 1));
   border-top: 1px solid rgba(255, 255, 255, 0.08);
   overflow-x: auto;
   overflow-y: hidden;
