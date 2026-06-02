@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sqlite3
 import sys
 import unittest
 from datetime import datetime, timezone
@@ -10,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi import HTTPException
 
 from live2d_server.session_bridge import (
+    AGENT_BRAND_OPENCODE,
     AgentAbortRequest,
     AgentChatApprovalRequest,
     AgentChatRequest,
@@ -24,6 +26,8 @@ from live2d_server.session_bridge import (
     CodexSessionChatError,
     CodexSessionChatService,
     GitBranchSwitchRequest,
+    OpencodeSessionChatError,
+    OpencodeSessionChatService,
     SessionBridgeService,
     _FileCursor,
     _SessionRecord,
@@ -119,6 +123,156 @@ class SessionBridgeServiceTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.service = SessionBridgeService()
         self.service.inactive_ttl_sec = 600
+        self.service.opencode_data_dir = Path("/tmp/session-bridge-test-missing-opencode-data")
+
+    def _write_opencode_fixture_db(self, data_dir: Path) -> str:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        session_id = "ses_testopencode123"
+        conn = sqlite3.connect(str(data_dir / "opencode.db"))
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE session (
+                    id text PRIMARY KEY,
+                    title text NOT NULL,
+                    directory text NOT NULL,
+                    model text,
+                    agent text,
+                    permission text,
+                    time_created integer NOT NULL,
+                    time_updated integer NOT NULL,
+                    time_archived integer,
+                    tokens_input integer DEFAULT 0,
+                    tokens_output integer DEFAULT 0,
+                    tokens_reasoning integer DEFAULT 0,
+                    tokens_cache_read integer DEFAULT 0,
+                    tokens_cache_write integer DEFAULT 0
+                );
+                CREATE TABLE message (
+                    id text PRIMARY KEY,
+                    session_id text NOT NULL,
+                    time_created integer NOT NULL,
+                    time_updated integer NOT NULL,
+                    data text NOT NULL
+                );
+                CREATE TABLE part (
+                    id text PRIMARY KEY,
+                    message_id text NOT NULL,
+                    session_id text NOT NULL,
+                    time_created integer NOT NULL,
+                    time_updated integer NOT NULL,
+                    data text NOT NULL
+                );
+                """
+            )
+            model = {"id": "deepseek-v4-flash-free", "providerID": "opencode", "variant": "max"}
+            conn.execute(
+                """
+                INSERT INTO session (
+                    id, title, directory, model, agent, permission,
+                    time_created, time_updated,
+                    tokens_input, tokens_output, tokens_reasoning,
+                    tokens_cache_read, tokens_cache_write
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    "OpenCode fixture",
+                    "/tmp/opencode-project",
+                    json.dumps(model),
+                    "build",
+                    "",
+                    1780388390000,
+                    1780388394000,
+                    10,
+                    20,
+                    3,
+                    4,
+                    5,
+                ),
+            )
+            bridge_prompt = json.dumps({
+                "schema": "session_bridge_user_input_v1",
+                "plan_mode": False,
+                "personality": None,
+                "user_input": "請介紹 OpenCode",
+                "instructions": [],
+            }, ensure_ascii=False)
+            conn.execute(
+                "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)",
+                ("msg_user", session_id, 1780388391000, 1780388391000, json.dumps({"role": "user"})),
+            )
+            conn.execute(
+                "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    "prt_user",
+                    "msg_user",
+                    session_id,
+                    1780388391001,
+                    1780388391001,
+                    json.dumps({"type": "text", "text": json.dumps(bridge_prompt, ensure_ascii=False)}, ensure_ascii=False),
+                ),
+            )
+            conn.execute(
+                "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)",
+                ("msg_assistant", session_id, 1780388392000, 1780388392000, json.dumps({"role": "assistant"})),
+            )
+            conn.execute(
+                "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    "prt_assistant",
+                    "msg_assistant",
+                    session_id,
+                    1780388392001,
+                    1780388392001,
+                    json.dumps({"type": "text", "text": "OpenCode 回覆內容"}, ensure_ascii=False),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return session_id
+
+    async def test_get_history_includes_opencode_db_sessions(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir)
+            session_id = self._write_opencode_fixture_db(data_dir)
+            self.service.opencode_data_dir = data_dir
+
+            with patch.object(self.service, "_collect_history_from_files", return_value={}):
+                payload = await self.service.get_history(limit=10)
+
+        item = next(item for item in payload["sessions"] if item["session_id"] == session_id)
+        self.assertEqual(item["agent_brand"], "opencode")
+        self.assertEqual(item["originator"], "OpenCode")
+        self.assertEqual(item["context"]["model"], "opencode/deepseek-v4-flash-free")
+        self.assertEqual(item["context"]["effort"], "max")
+        self.assertEqual(item["context"]["total_tokens"], 42)
+
+    async def test_get_conversation_includes_opencode_db_messages(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir)
+            session_id = self._write_opencode_fixture_db(data_dir)
+            self.service.opencode_data_dir = data_dir
+
+            with patch.object(self.service, "_collect_conversation_from_files", return_value=[]):
+                with patch.object(self.service, "_collect_claude_conversation_from_files", return_value=[]):
+                    payload = await self.service.get_conversation(session_id=session_id)
+
+        self.assertEqual(
+            [(item["role"], item["content"]) for item in payload["messages"]],
+            [("user", "請介紹 OpenCode"), ("assistant", "OpenCode 回覆內容")],
+        )
+
+    async def test_build_state_event_uses_opencode_source(self) -> None:
+        session = _SessionRecord(
+            session_id="ses_opencode_source",
+            display_name="OpenCode",
+            agent_brand="opencode",
+            originator="OpenCode",
+        )
+        event = self.service._build_state_event(session)
+        self.assertEqual(event["source"], "opencode_db")
 
     async def test_map_to_state_rules(self) -> None:
         self.assertEqual(self.service._map_to_state("event_msg", {"type": "agent_reasoning"}), ("THINKING", False, False))
@@ -1889,9 +2043,11 @@ class AgentProviderApiContractTest(unittest.IsolatedAsyncioTestCase):
         codex_service.submit_approval = AsyncMock(return_value=False)
         claude_service = AsyncMock()
         claude_service.submit_approval = AsyncMock(return_value=True)
+        opencode_service = AsyncMock()
+        opencode_service.submit_approval = AsyncMock(return_value=False)
 
         def _get_chat_service(brand: str):
-            return {"codex": codex_service, "claude": claude_service}[brand]
+            return {"codex": codex_service, "claude": claude_service, "opencode": opencode_service}[brand]
 
         with patch("live2d_server.session_bridge_api.agent_provider.get_chat_service", side_effect=_get_chat_service):
             payload = await bridge_agent_chat_approval(
@@ -2211,9 +2367,11 @@ class BridgeAgentChatAbortApiTest(unittest.IsolatedAsyncioTestCase):
         codex_service.abort_session = AsyncMock(return_value=False)
         claude_service = AsyncMock()
         claude_service.abort_session = AsyncMock(return_value=True)
+        opencode_service = AsyncMock()
+        opencode_service.abort_session = AsyncMock(return_value=False)
 
         def _get_chat_service(brand: str):
-            return {"codex": codex_service, "claude": claude_service}[brand]
+            return {"codex": codex_service, "claude": claude_service, "opencode": opencode_service}[brand]
 
         with patch(
             "live2d_server.session_bridge_api.agent_provider.get_chat_service",
@@ -2234,9 +2392,11 @@ class BridgeAgentChatAbortApiTest(unittest.IsolatedAsyncioTestCase):
         codex_service.abort_session = AsyncMock(return_value=True)
         claude_service = AsyncMock()
         claude_service.abort_session = AsyncMock(return_value=False)
+        opencode_service = AsyncMock()
+        opencode_service.abort_session = AsyncMock(return_value=False)
 
         def _get_chat_service(brand: str):
-            return {"codex": codex_service, "claude": claude_service}[brand]
+            return {"codex": codex_service, "claude": claude_service, "opencode": opencode_service}[brand]
 
         with patch(
             "live2d_server.session_bridge_api.agent_provider.get_chat_service",
@@ -2255,9 +2415,11 @@ class BridgeAgentChatAbortApiTest(unittest.IsolatedAsyncioTestCase):
         codex_service.abort_session = AsyncMock(return_value=False)
         claude_service = AsyncMock()
         claude_service.abort_session = AsyncMock(return_value=False)
+        opencode_service = AsyncMock()
+        opencode_service.abort_session = AsyncMock(return_value=False)
 
         def _get_chat_service(brand: str):
-            return {"codex": codex_service, "claude": claude_service}[brand]
+            return {"codex": codex_service, "claude": claude_service, "opencode": opencode_service}[brand]
 
         with patch(
             "live2d_server.session_bridge_api.agent_provider.get_chat_service",
@@ -2272,6 +2434,386 @@ class BridgeAgentChatAbortApiTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException) as ctx:
             await bridge_agent_chat_abort(AgentAbortRequest(session_id="   "))
         self.assertEqual(ctx.exception.status_code, 422)
+
+
+# ===========================================================================
+# OpencodeSessionChatService tests
+# ===========================================================================
+
+
+class OpencodeStreamEventFactory:
+    """Helper to build opencode CLI stream-json events."""
+
+    @staticmethod
+    def step_start(session_id: str = "ses_test123") -> str:
+        return json.dumps({
+            "type": "step_start",
+            "timestamp": 1780385503401,
+            "sessionID": session_id,
+            "part": {
+                "id": "prt_test1",
+                "messageID": "msg_test1",
+                "sessionID": session_id,
+                "snapshot": "abc123",
+                "type": "step-start",
+            },
+        })
+
+    @staticmethod
+    def text(text: str, session_id: str = "ses_test123") -> str:
+        return json.dumps({
+            "type": "text",
+            "timestamp": 1780385504940,
+            "sessionID": session_id,
+            "part": {
+                "id": "prt_test2",
+                "messageID": "msg_test1",
+                "sessionID": session_id,
+                "type": "text",
+                "text": text,
+            },
+        })
+
+    @staticmethod
+    def step_finish(
+        total_tokens: int = 9421,
+        session_id: str = "ses_test123",
+        text: str = "",
+    ) -> str:
+        ev = {
+            "type": "step_finish",
+            "timestamp": 1780385505094,
+            "sessionID": session_id,
+            "part": {
+                "id": "prt_test3",
+                "reason": "stop",
+                "snapshot": "abc123",
+                "messageID": "msg_test1",
+                "sessionID": session_id,
+                "type": "step-finish",
+                "tokens": {
+                    "total": total_tokens,
+                    "input": 7495,
+                    "output": 20,
+                    "reasoning": 0,
+                    "cache": {"write": 0, "read": 1906},
+                },
+                "cost": 0,
+            },
+        }
+        if text:
+            ev["part"]["text"] = text
+        return json.dumps(ev)
+
+    @staticmethod
+    def error(message: str = "test error") -> str:
+        return json.dumps({
+            "type": "error",
+            "timestamp": 1780385473396,
+            "sessionID": "ses_test123",
+            "error": {
+                "name": "UnknownError",
+                "data": {"message": message},
+            },
+        })
+
+
+class OpencodeSessionChatServiceTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.service = OpencodeSessionChatService(
+            opencode_bin="opencode",
+            idle_timeout_sec=300,
+            max_timeout_sec=600,
+            default_cwd="/tmp",
+        )
+
+    async def test_constructor(self) -> None:
+        self.assertEqual(self.service.opencode_bin, "opencode")
+        self.assertEqual(self.service.idle_timeout_sec, 300)
+        self.assertEqual(self.service.max_timeout_sec, 600)
+
+    async def test_abort_session_returns_false_for_empty_session_id(self) -> None:
+        result = await self.service.abort_session("")
+        self.assertFalse(result)
+
+    async def test_abort_session_returns_false_for_unknown_session(self) -> None:
+        result = await self.service.abort_session("nonexistent")
+        self.assertFalse(result)
+
+    async def test_submit_approval_returns_false(self) -> None:
+        result = await self.service.submit_approval("x", "allow_once")
+        self.assertFalse(result)
+
+    async def test_build_cli_command_does_not_skip_permissions_by_default(self) -> None:
+        command = self.service._build_cli_command(
+            session_id="ses_123",
+            prompt="hello",
+            cwd="/tmp",
+            image_paths=[],
+            model="opencode/test-model",
+            reasoning_effort=None,
+            permission_mode="default",
+            approval_policy=None,
+            sandbox_mode=None,
+        )
+
+        self.assertNotIn("--dangerously-skip-permissions", command)
+
+    async def test_build_cli_command_skips_permissions_only_for_full_mode(self) -> None:
+        command = self.service._build_cli_command(
+            session_id="ses_123",
+            prompt="hello",
+            cwd="/tmp",
+            image_paths=[],
+            model="opencode/test-model",
+            reasoning_effort=None,
+            permission_mode="full",
+            approval_policy=None,
+            sandbox_mode=None,
+        )
+
+        self.assertIn("--dangerously-skip-permissions", command)
+
+    @patch(
+        "live2d_server.session_bridge_opencode_chat.asyncio.create_subprocess_exec",
+        autospec=True,
+    )
+    async def test_create_session_extracts_session_id_from_step_start(
+        self, mock_create_subprocess: MagicMock,
+    ) -> None:
+        mock_process = AsyncMock()
+        mock_process.returncode = 0
+        mock_process.stdout = AsyncMock()
+        mock_process.stdout.readline = AsyncMock(side_effect=[b"", b""])
+        mock_process.stdout.read = AsyncMock(return_value=b"")
+        mock_process.stderr = AsyncMock()
+        mock_process.stderr.read = AsyncMock(return_value=b"")
+        mock_process.communicate = AsyncMock(return_value=(
+            b"{}\n" + OpencodeStreamEventFactory.step_start("ses_new123").encode() + b"\n{}",
+            b"",
+        ))
+        mock_create_subprocess.return_value = mock_process
+
+        result = await self.service.create_session(cwd="/tmp", model="opencode/test-model")
+        self.assertEqual(result["session_id"], "ses_new123")
+        self.assertEqual(result["cwd"], "/tmp")
+        self.assertEqual(result["model"], "opencode/test-model")
+        self.assertEqual(result["permission_mode"], "default")
+
+    @patch(
+        "live2d_server.session_bridge_opencode_chat.asyncio.create_subprocess_exec",
+        autospec=True,
+    )
+    async def test_create_session_raises_on_no_session_id(
+        self, mock_create_subprocess: MagicMock,
+    ) -> None:
+        mock_process = AsyncMock()
+        mock_process.returncode = 0
+        mock_process.communicate = AsyncMock(return_value=(b"{}", b""))
+        mock_create_subprocess.return_value = mock_process
+
+        with self.assertRaises(OpencodeSessionChatError):
+            await self.service.create_session(cwd="/tmp")
+
+    @patch(
+        "live2d_server.session_bridge_opencode_chat.asyncio.create_subprocess_exec",
+        autospec=True,
+    )
+    async def test_create_session_raises_on_cli_failure(
+        self, mock_create_subprocess: MagicMock,
+    ) -> None:
+        mock_process = AsyncMock()
+        mock_process.returncode = 1
+        mock_process.communicate = AsyncMock(return_value=(b"", b"some error"))
+        mock_create_subprocess.return_value = mock_process
+
+        with self.assertRaises(OpencodeSessionChatError):
+            await self.service.create_session(cwd="/tmp")
+
+    @patch(
+        "live2d_server.session_bridge_opencode_chat.asyncio.create_subprocess_exec",
+        autospec=True,
+    )
+    async def test_stream_prompt_emits_context_and_text_and_token_events(
+        self, mock_create_subprocess: MagicMock,
+    ) -> None:
+        sid = "ses_stream123"
+        events = [
+            OpencodeStreamEventFactory.step_start(sid),
+            OpencodeStreamEventFactory.text("Hello from opencode", sid),
+            OpencodeStreamEventFactory.step_finish(total_tokens=9876, session_id=sid),
+        ]
+        encoded_lines = [ev.encode() + b"\n" for ev in events]
+
+        mock_process = AsyncMock()
+        mock_process.returncode = 0
+        mock_process.stdout = AsyncMock()
+
+        async def _readline():
+            if encoded_lines:
+                return encoded_lines.pop(0)
+            return b""
+
+        mock_process.stdout.readline = AsyncMock(side_effect=_readline)
+        mock_process.stdout.read = AsyncMock(return_value=b"")
+        mock_process.stderr = AsyncMock()
+        mock_process.stderr.read = AsyncMock(return_value=b"")
+        mock_process.wait = AsyncMock(return_value=0)
+        mock_create_subprocess.return_value = mock_process
+
+        results: list[dict] = []
+        async for event in self.service.stream_prompt(sid, "hello"):
+            results.append(event)
+
+        types = [r["type"] for r in results]
+        self.assertIn("context", types)
+        self.assertIn("text", types)
+
+        text_events = [r for r in results if r["type"] == "text"]
+        self.assertTrue(any("Hello" in str(t.get("content", "")) for t in text_events))
+
+        context_events = [r for r in results if r["type"] == "context"]
+        token_ctx = [c for c in context_events if "total_tokens" in (c.get("content") or {})]
+        if token_ctx:
+            self.assertEqual(token_ctx[0]["content"]["total_tokens"], 9876)
+
+    @patch(
+        "live2d_server.session_bridge_opencode_chat.asyncio.create_subprocess_exec",
+        autospec=True,
+    )
+    async def test_stream_prompt_emits_error_event_on_cli_error(
+        self, mock_create_subprocess: MagicMock,
+    ) -> None:
+        sid = "ses_err123"
+        mock_process = AsyncMock()
+        mock_process.returncode = 1
+        mock_process.stdout = AsyncMock()
+        mock_process.stdout.readline = AsyncMock(return_value=b"")
+        mock_process.stdout.read = AsyncMock(return_value=b"")
+        mock_process.stderr = AsyncMock()
+        mock_process.stderr.read = AsyncMock(return_value=b"error output")
+        mock_create_subprocess.return_value = mock_process
+
+        with self.assertRaises(OpencodeSessionChatError):
+            async for _ in self.service.stream_prompt(sid, "hello"):
+                pass
+
+    @patch(
+        "live2d_server.session_bridge_opencode_chat.asyncio.create_subprocess_exec",
+        autospec=True,
+    )
+    async def test_stream_prompt_handles_json_error_event(
+        self, mock_create_subprocess: MagicMock,
+    ) -> None:
+        sid = "ses_errevent"
+        events = [
+            OpencodeStreamEventFactory.step_start(sid),
+            OpencodeStreamEventFactory.error("Model not found: test"),
+        ]
+        encoded_lines = [ev.encode() + b"\n" for ev in events]
+
+        mock_process = AsyncMock()
+        mock_process.returncode = None
+        mock_process.stdout = AsyncMock()
+        mock_process.wait = AsyncMock(return_value=0)
+
+        async def _readline():
+            if encoded_lines:
+                return encoded_lines.pop(0)
+            return b""
+
+        mock_process.stdout.readline = AsyncMock(side_effect=_readline)
+        mock_process.stdout.read = AsyncMock(return_value=b"")
+        mock_process.stderr = AsyncMock()
+        mock_process.stderr.read = AsyncMock(return_value=b"")
+        mock_create_subprocess.return_value = mock_process
+
+        results: list[dict] = []
+        with patch("live2d_server.session_bridge_opencode_chat._kill_process_tree") as kill_mock:
+            async for event in self.service.stream_prompt(sid, "hello"):
+                results.append(event)
+
+        error_events = [r for r in results if r["type"] == "error"]
+        self.assertTrue(len(error_events) >= 1)
+        self.assertIn("Model not found", str(error_events[0].get("content", "")))
+        kill_mock.assert_called_once_with(mock_process)
+        mock_process.wait.assert_awaited()
+
+    async def test_stream_prompt_rejects_empty_session_id(self) -> None:
+        with self.assertRaises(OpencodeSessionChatError):
+            async for _ in self.service.stream_prompt("", "hello"):
+                pass
+
+    async def test_stream_prompt_rejects_empty_prompt(self) -> None:
+        with self.assertRaises(OpencodeSessionChatError):
+            async for _ in self.service.stream_prompt("ses_123", ""):
+                pass
+
+
+class AgentProviderRouterOpencodeTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.router = AgentProviderRouter(default_cwd="/tmp")
+
+    def test_get_chat_service_returns_opencode_service(self) -> None:
+        service = self.router.get_chat_service(AGENT_BRAND_OPENCODE)
+        from live2d_server.session_bridge_opencode_chat import OpencodeSessionChatService
+        self.assertIsInstance(service, OpencodeSessionChatService)
+
+    def test_get_chat_service_opencode_is_cached(self) -> None:
+        s1 = self.router.get_chat_service(AGENT_BRAND_OPENCODE)
+        s2 = self.router.get_chat_service(AGENT_BRAND_OPENCODE)
+        self.assertIs(s1, s2)
+
+    def test_normalize_brand_accepts_opencode(self) -> None:
+        self.assertEqual(
+            self.router.normalize_brand("opencode"),
+            AGENT_BRAND_OPENCODE,
+        )
+        self.assertEqual(
+            self.router.normalize_brand("OPENCODE"),
+            AGENT_BRAND_OPENCODE,
+        )
+
+    def test_brand_catalog_includes_opencode(self) -> None:
+        catalog = self.router.brand_catalog()
+        brands = [b["brand"] for b in catalog]
+        self.assertIn(AGENT_BRAND_OPENCODE, brands)
+
+        opencode_entry = next(b for b in catalog if b["brand"] == AGENT_BRAND_OPENCODE)
+        self.assertIn("display_name", opencode_entry)
+        self.assertIn("models", opencode_entry)
+        self.assertTrue(len(opencode_entry["models"]) > 0)
+
+    def test_supported_brands_includes_opencode(self) -> None:
+        brands = self.router.supported_brands()
+        self.assertIn(AGENT_BRAND_OPENCODE, brands)
+
+    def test_get_session_dir_returns_opencode_dir(self) -> None:
+        d = self.router.get_session_dir(AGENT_BRAND_OPENCODE)
+        self.assertTrue("opencode" in str(d).lower())
+
+    def test_default_models_returns_opencode_models(self) -> None:
+        models = self.router.default_models(AGENT_BRAND_OPENCODE)
+        self.assertTrue(len(models) > 0)
+        self.assertTrue(any("opencode/" in m for m in models))
+
+
+# ===========================================================================
+# Opencode API endpoint integration tests
+# ===========================================================================
+
+
+class BridgeAgentBrandsOpencodeTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.router = AgentProviderRouter(default_cwd="/tmp")
+
+    def test_agent_brands_endpoint_returns_opencode(self) -> None:
+        catalog = AgentProviderRouter.brand_catalog()
+        brands = [b["brand"] for b in catalog]
+        self.assertIn(AGENT_BRAND_OPENCODE, brands)
+        self.assertIn("codex", brands)
+        self.assertIn("claude", brands)
+        self.assertEqual(len(brands), 3)
 
 
 if __name__ == "__main__":

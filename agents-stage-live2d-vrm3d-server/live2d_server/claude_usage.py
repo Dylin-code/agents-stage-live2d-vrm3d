@@ -148,12 +148,20 @@ async def fetch_claude_usage() -> Optional[dict[str, Any]]:
             _cache["data"] = data
             _cache["fetched_at"] = time.time()
             return data
+    except httpx.HTTPStatusError as exc:
+        logger.warning(
+            "Claude usage unavailable: Anthropic usage API returned HTTP %s",
+            exc.response.status_code if exc.response is not None else "unknown",
+        )
+    except httpx.RequestError as exc:
+        logger.warning("Claude usage unavailable: %s", exc)
     except Exception:
-        logger.exception("Failed to fetch Claude usage")
-        # Return stale cache on error
-        if _cache["data"] is not None:
-            return _cache["data"]
-        return None
+        logger.exception("Unexpected Claude usage fetch failure")
+
+    # Return stale cache on error.
+    if _cache["data"] is not None:
+        return _cache["data"]
+    return None
 
 
 def format_usage_summary(data: dict[str, Any]) -> dict[str, Any]:

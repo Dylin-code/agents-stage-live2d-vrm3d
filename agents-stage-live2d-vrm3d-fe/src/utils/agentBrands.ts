@@ -28,6 +28,22 @@ export const CLAUDE_AGENT_MODELS = [
   'haiku',
 ]
 
+export const OPENCODE_AGENT_MODELS = [
+  'opencode/deepseek-v4-flash-free',
+  'opencode/minimax-m3-free',
+  'opencode/mimo-v2.5-free',
+  'opencode/gpt-5.5',
+  'opencode/gpt-5.4',
+  'opencode/gpt-5.4-mini',
+  'opencode/gpt-5.4-nano',
+  'opencode/gpt-5.3-codex',
+  'opencode/big-pickle',
+  'ollama-cloud/deepseek-v4-flash',
+  'ollama-cloud/gemini-3-flash-preview',
+  'ollama-cloud/claude-sonnet-4-6',
+  'ollama-cloud/claude-opus-4-7',
+]
+
 export const DEFAULT_AGENT_BRANDS: AgentBrandCatalogItem[] = [
   {
     brand: 'codex',
@@ -41,6 +57,13 @@ export const DEFAULT_AGENT_BRANDS: AgentBrandCatalogItem[] = [
     display_name: 'Claude',
     badge_icon: '/brand/claude-badge.svg',
     models: CLAUDE_AGENT_MODELS,
+    default_permission_mode: 'default',
+  },
+  {
+    brand: 'opencode',
+    display_name: 'OpenCode',
+    badge_icon: '/brand/opencode-badge.svg',
+    models: OPENCODE_AGENT_MODELS,
     default_permission_mode: 'default',
   },
 ]

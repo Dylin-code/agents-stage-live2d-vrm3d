@@ -7,9 +7,10 @@ from typing import Any, Union
 
 from .session_bridge_chat import CodexSessionChatService
 from .session_bridge_claude_chat import ClaudeSessionChatService
-from .session_bridge_shared import AGENT_BRAND_CLAUDE, AGENT_BRAND_CODEX
+from .session_bridge_opencode_chat import OpencodeSessionChatService
+from .session_bridge_shared import AGENT_BRAND_CLAUDE, AGENT_BRAND_CODEX, AGENT_BRAND_OPENCODE
 
-ChatService = Union[CodexSessionChatService, ClaudeSessionChatService]
+ChatService = Union[CodexSessionChatService, ClaudeSessionChatService, OpencodeSessionChatService]
 
 _CODEX_MODELS: tuple[str, ...] = (
     "gpt-5.5",
@@ -31,6 +32,22 @@ _CLAUDE_MODELS: tuple[str, ...] = (
     "sonnet",
     "opus",
     "haiku",
+)
+
+_OPENCODE_MODELS: tuple[str, ...] = (
+    "opencode/deepseek-v4-flash-free",
+    "opencode/minimax-m3-free",
+    "opencode/mimo-v2.5-free",
+    "opencode/gpt-5.5",
+    "opencode/gpt-5.4",
+    "opencode/gpt-5.4-mini",
+    "opencode/gpt-5.4-nano",
+    "opencode/gpt-5.3-codex",
+    "opencode/big-pickle",
+    "ollama-cloud/deepseek-v4-flash",
+    "ollama-cloud/gemini-3-flash-preview",
+    "ollama-cloud/claude-sonnet-4-6",
+    "ollama-cloud/claude-opus-4-7",
 )
 
 
@@ -61,6 +78,14 @@ _BRAND_METADATA: dict[str, AgentBrandMetadata] = {
         session_dir_env="CLAUDE_SESSION_DIR",
         session_dir_default="~/.claude/projects",
     ),
+    AGENT_BRAND_OPENCODE: AgentBrandMetadata(
+        brand=AGENT_BRAND_OPENCODE,
+        display_name="OpenCode",
+        badge_icon="/brand/opencode-badge.svg",
+        models=_OPENCODE_MODELS,
+        session_dir_env="OPENCODE_DATA_DIR",
+        session_dir_default="~/.local/share/opencode",
+    ),
 }
 
 
@@ -71,6 +96,7 @@ class AgentProviderRouter:
         self._default_cwd = default_cwd
         self._codex_service: CodexSessionChatService | None = None
         self._claude_service: ClaudeSessionChatService | None = None
+        self._opencode_service: OpencodeSessionChatService | None = None
 
     # ------------------------------------------------------------------
     # Chat service accessors
@@ -78,6 +104,8 @@ class AgentProviderRouter:
 
     def get_chat_service(self, brand: str) -> ChatService:
         normalized = self.normalize_brand(brand)
+        if normalized == AGENT_BRAND_OPENCODE:
+            return self._get_opencode_service()
         if normalized == AGENT_BRAND_CLAUDE:
             return self._get_claude_service()
         return self._get_codex_service()
@@ -91,6 +119,11 @@ class AgentProviderRouter:
         if self._claude_service is None:
             self._claude_service = ClaudeSessionChatService(default_cwd=self._default_cwd)
         return self._claude_service
+
+    def _get_opencode_service(self) -> OpencodeSessionChatService:
+        if self._opencode_service is None:
+            self._opencode_service = OpencodeSessionChatService(default_cwd=self._default_cwd)
+        return self._opencode_service
 
     # ------------------------------------------------------------------
     # Session directory accessors (for runtime file watchers)

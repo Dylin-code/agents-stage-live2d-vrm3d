@@ -4,8 +4,10 @@ import logging
 import os
 import os.path
 import posixpath
+import sqlite3
 import subprocess
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -112,6 +114,7 @@ class SessionBridgeService:
     def __init__(self) -> None:
         self.session_dir = Path(os.getenv("CODEX_SESSION_DIR", "~/.codex/sessions")).expanduser()
         self.claude_session_dir = Path(os.getenv("CLAUDE_SESSION_DIR", "~/.claude/projects")).expanduser()
+        self.opencode_data_dir = Path(os.getenv("OPENCODE_DATA_DIR", "~/.local/share/opencode")).expanduser()
         self.enabled = _env_bool("SESSION_BRIDGE_ENABLED", True)
         self.inactive_ttl_sec = int(os.getenv("SESSION_INACTIVE_TTL_SEC", "600"))
 
@@ -216,6 +219,7 @@ class SessionBridgeService:
         safe_limit = max(1, min(int(limit or 20), 200))
         # Collect file-based Codex sessions.
         sessions = self._collect_history_from_files()
+        sessions.update(self._collect_opencode_history_from_db())
         now_epoch = time.time()
         # Merge in-memory sessions (e.g. Claude sessions that have no JSONL files).
         async with self._sessions_lock:
@@ -301,10 +305,11 @@ class SessionBridgeService:
                 "messages": [],
             }
 
-        # Collect from both Codex and Claude sources and merge
+        # Collect from Codex, Claude, and OpenCode sources and merge.
         messages = (
             self._collect_conversation_from_files(normalized_session_id)
             + self._collect_claude_conversation_from_files(normalized_session_id)
+            + self._collect_opencode_conversation_from_db(normalized_session_id)
         )
         ordered = sorted(messages, key=lambda item: (item["ts_epoch"], item["seq"]))
         deduped: list[dict[str, Any]] = []
@@ -527,6 +532,8 @@ class SessionBridgeService:
                 session.agent_brand = str(agent_brand).strip().lower()
                 if session.agent_brand == "claude":
                     session.originator = "Claude Code"
+                elif session.agent_brand == "opencode":
+                    session.originator = "OpenCode"
             session.last_seen_at = now_ts
             session.last_seen_epoch = now_epoch
             session.active = True
@@ -1813,6 +1820,235 @@ class SessionBridgeService:
             return cleaned[: max_len - 3].rstrip() + "..."
         return cleaned
 
+    def _opencode_db_path(self) -> Path:
+        return self.opencode_data_dir / "opencode.db"
+
+    def _connect_opencode_db(self) -> Optional[sqlite3.Connection]:
+        db_path = self._opencode_db_path()
+        if not db_path.exists():
+            return None
+        try:
+            conn = sqlite3.connect(str(db_path), timeout=0.2)
+            conn.row_factory = sqlite3.Row
+            return conn
+        except sqlite3.Error:
+            logger.debug("Unable to open OpenCode database: %s", db_path, exc_info=True)
+            return None
+
+    @staticmethod
+    def _opencode_iso_from_ms(value: Any) -> str:
+        try:
+            millis = float(value)
+        except (TypeError, ValueError):
+            return _iso_now()
+        if millis <= 0:
+            return _iso_now()
+        return datetime.fromtimestamp(millis / 1000.0, timezone.utc).isoformat().replace("+00:00", "Z")
+
+    @staticmethod
+    def _opencode_epoch_from_ms(value: Any) -> float:
+        try:
+            millis = float(value)
+        except (TypeError, ValueError):
+            return time.time()
+        if millis <= 0:
+            return time.time()
+        return millis / 1000.0
+
+    @staticmethod
+    def _parse_json_object(value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return value
+        if not isinstance(value, str) or not value.strip():
+            return {}
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    @classmethod
+    def _opencode_model_context(cls, raw_model: Any) -> tuple[str, str]:
+        model_data = cls._parse_json_object(raw_model)
+        if not model_data:
+            return str(raw_model or "").strip(), ""
+        provider = str(model_data.get("providerID") or model_data.get("provider") or "").strip()
+        model_id = str(model_data.get("id") or model_data.get("modelID") or model_data.get("model") or "").strip()
+        variant = str(model_data.get("variant") or "").strip()
+        if provider and model_id:
+            model = f"{provider}/{model_id}"
+        else:
+            model = model_id or provider
+        effort = "" if variant == "default" else variant
+        return model, effort
+
+    @staticmethod
+    def _opencode_permission_mode(raw_permission: Any) -> str:
+        text = str(raw_permission or "").strip().lower()
+        if "dangerously" in text or "skip" in text:
+            return "full"
+        return PERMISSION_MODE_DEFAULT
+
+    @classmethod
+    def _opencode_visible_text(cls, text: str) -> str:
+        candidate = str(text or "").strip()
+        if len(candidate) >= 2 and candidate[0] == '"' and candidate[-1] == '"':
+            try:
+                decoded = json.loads(candidate)
+            except json.JSONDecodeError:
+                decoded = candidate
+            if isinstance(decoded, str):
+                candidate = decoded.strip()
+        return _extract_visible_user_input(candidate)
+
+    def _collect_opencode_history_from_db(self) -> dict[str, dict[str, Any]]:
+        conn = self._connect_opencode_db()
+        if conn is None:
+            return {}
+        try:
+            rows = conn.execute(
+                """
+                SELECT
+                  id, title, directory, model, agent, permission,
+                  time_created, time_updated,
+                  tokens_input, tokens_output, tokens_reasoning,
+                  tokens_cache_read, tokens_cache_write
+                FROM session
+                WHERE time_archived IS NULL
+                ORDER BY time_updated DESC
+                LIMIT 200
+                """
+            ).fetchall()
+        except sqlite3.Error:
+            logger.debug("Unable to collect OpenCode history from database", exc_info=True)
+            return {}
+        finally:
+            conn.close()
+
+        sessions: dict[str, dict[str, Any]] = {}
+        now_epoch = time.time()
+        for row in rows:
+            session_id = str(row["id"] or "").strip()
+            if not session_id:
+                continue
+            cwd = str(row["directory"] or "").strip()
+            title = str(row["title"] or "").strip() or f"session-{session_id[:8]}"
+            last_seen_epoch = self._opencode_epoch_from_ms(row["time_updated"])
+            model, effort = self._opencode_model_context(row["model"])
+            total_tokens = sum(
+                self._coerce_non_negative_int(row[key]) or 0
+                for key in (
+                    "tokens_input",
+                    "tokens_output",
+                    "tokens_reasoning",
+                    "tokens_cache_read",
+                    "tokens_cache_write",
+                )
+            )
+            context: dict[str, Any] = {
+                "model": model,
+                "effort": effort,
+                "permission_mode": self._opencode_permission_mode(row["permission"]),
+                "approval_policy": "",
+                "sandbox_mode": "",
+            }
+            if total_tokens > 0:
+                context["total_tokens"] = total_tokens
+            sessions[session_id] = {
+                "session_id": session_id,
+                "display_name": title,
+                "state": "IDLE",
+                "last_seen_at": self._opencode_iso_from_ms(row["time_updated"]),
+                "last_seen_epoch": last_seen_epoch,
+                "active": (now_epoch - last_seen_epoch) < self.inactive_ttl_sec,
+                "originator": "OpenCode",
+                "cwd": cwd,
+                "cwd_basename": _basename_from_cwd(cwd),
+                "last_event_type": "assistant_message",
+                "branch": "",
+                "agent_brand": "opencode",
+                "has_real_user_input": True,
+                "context": context,
+            }
+        return sessions
+
+    def _collect_opencode_conversation_from_db(self, session_id: str) -> list[dict[str, Any]]:
+        session_key = (session_id or "").strip()
+        if not session_key:
+            return []
+        conn = self._connect_opencode_db()
+        if conn is None:
+            return []
+        try:
+            rows = conn.execute(
+                """
+                SELECT
+                  m.id AS message_id,
+                  m.time_created AS message_time,
+                  m.data AS message_data,
+                  p.time_created AS part_time,
+                  p.data AS part_data
+                FROM message AS m
+                LEFT JOIN part AS p ON p.message_id = m.id
+                WHERE m.session_id = ?
+                ORDER BY m.time_created ASC, p.time_created ASC, p.id ASC
+                """,
+                (session_key,),
+            ).fetchall()
+        except sqlite3.Error:
+            logger.debug("Unable to collect OpenCode conversation from database", exc_info=True)
+            return []
+        finally:
+            conn.close()
+
+        grouped: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            message_id = str(row["message_id"] or "").strip()
+            if not message_id:
+                continue
+            item = grouped.setdefault(
+                message_id,
+                {
+                    "role": "",
+                    "time": row["message_time"],
+                    "parts": [],
+                },
+            )
+            message_data = self._parse_json_object(row["message_data"])
+            role = str(message_data.get("role") or "").strip().lower()
+            if role in {"user", "assistant"}:
+                item["role"] = role
+            part_data = self._parse_json_object(row["part_data"])
+            if str(part_data.get("type") or "") == "text":
+                text = str(part_data.get("text") or "")
+                if text:
+                    item["parts"].append(text)
+            if row["part_time"]:
+                item["time"] = row["part_time"]
+
+        messages: list[dict[str, Any]] = []
+        seq = 0
+        for item in grouped.values():
+            role = str(item.get("role") or "")
+            if role not in {"user", "assistant"}:
+                continue
+            raw_text = "".join(str(part) for part in item.get("parts") or [])
+            visible = self._opencode_visible_text(raw_text) if role == "user" else raw_text.strip()
+            if not visible:
+                continue
+            if _is_auto_injected_message(role, visible):
+                continue
+            timestamp = self._opencode_iso_from_ms(item.get("time"))
+            messages.append({
+                "role": role,
+                "content": visible,
+                "timestamp": timestamp,
+                "ts_epoch": self._opencode_epoch_from_ms(item.get("time")),
+                "seq": seq,
+            })
+            seq += 1
+        return messages
+
     def _new_session(self, session_id: str, ts: str) -> _SessionRecord:
         ts_epoch = _ts_to_epoch(ts)
         return _SessionRecord(
@@ -2002,11 +2238,20 @@ class SessionBridgeService:
             "display_name": session.display_name,
             "state": session.state,
             "ts": session.last_seen_at,
-            "source": "claude_jsonl" if getattr(session, "agent_brand", "codex") == "claude" else "codex_jsonl",
+            "source": self._source_for_session(session),
             "agent_brand": getattr(session, "agent_brand", "codex"),
             "has_real_user_input": bool(getattr(session, "has_real_user_input", False)),
             "meta": meta,
         }
+
+    @staticmethod
+    def _source_for_session(session: _SessionRecord) -> str:
+        brand = str(getattr(session, "agent_brand", "codex") or "codex").strip().lower()
+        if brand == "claude":
+            return "claude_jsonl"
+        if brand == "opencode":
+            return "opencode_db"
+        return "codex_jsonl"
 
     async def _broadcast(self, event: dict[str, Any]) -> None:
         async with self._clients_lock:

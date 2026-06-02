@@ -27,11 +27,13 @@ from .session_bridge_api import (
 )
 from .session_bridge_chat import CodexSessionChatError, CodexSessionChatService
 from .session_bridge_claude_chat import ClaudeSessionChatError, ClaudeSessionChatService
+from .session_bridge_opencode_chat import OpencodeSessionChatError, OpencodeSessionChatService
 from .session_bridge_provider import AgentProviderRouter
 from .session_bridge_runtime import SessionBridgeService
 from .session_bridge_shared import (
     AGENT_BRAND_CODEX,
     AGENT_BRAND_CLAUDE,
+    AGENT_BRAND_OPENCODE,
     AgentAbortRequest,
     AgentChatApprovalRequest,
     AgentChatRequest,
@@ -57,10 +59,13 @@ __all__ = [
     "CodexSessionChatService",
     "ClaudeSessionChatError",
     "ClaudeSessionChatService",
+    "OpencodeSessionChatError",
+    "OpencodeSessionChatService",
     "AgentProviderRouter",
     "SessionBridgeService",
     "AGENT_BRAND_CODEX",
     "AGENT_BRAND_CLAUDE",
+    "AGENT_BRAND_OPENCODE",
     "AgentAbortRequest",
     "AgentChatApprovalRequest",
     "AgentChatRequest",

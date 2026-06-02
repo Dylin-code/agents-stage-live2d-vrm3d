@@ -16,11 +16,13 @@ from .session_bridge_chat import (
     _resolve_codex_exec_permission_settings,
 )
 from .session_bridge_claude_chat import ClaudeSessionChatError
+from .session_bridge_opencode_chat import OpencodeSessionChatError, resolve_opencode_permission_settings
 from .session_bridge_provider import AgentProviderRouter
 from .session_bridge_runtime import SessionBridgeService
 from .session_bridge_shared import (
     AGENT_BRAND_CLAUDE,
     AGENT_BRAND_CODEX,
+    AGENT_BRAND_OPENCODE,
     AgentAbortRequest,
     AgentChatApprovalRequest,
     AgentChatRequest,
@@ -439,7 +441,7 @@ async def _bridge_chat_with_service(
                 final_ctx["model_context_window"] = runtime_model_context_window
             yield f"data: {json.dumps({'type': 'context', 'content': final_ctx}, ensure_ascii=False)}\n\n"
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
-        except (CodexSessionChatError, ClaudeSessionChatError) as exc:
+        except (CodexSessionChatError, ClaudeSessionChatError, OpencodeSessionChatError) as exc:
             yield f"data: {json.dumps({'type': 'error', 'content': str(exc)}, ensure_ascii=False)}\n\n"
         except Exception as exc:
             logger.exception("bridge chat failed (brand=%s)", brand)
@@ -574,6 +576,12 @@ def _resolve_permission_settings_for_brand(
 ) -> tuple[str, str, str]:
     if brand == AGENT_BRAND_CODEX:
         return _resolve_codex_exec_permission_settings(
+            permission_mode=permission_mode,
+            approval_policy=approval_policy,
+            sandbox_mode=sandbox_mode,
+        )
+    if brand == AGENT_BRAND_OPENCODE:
+        return resolve_opencode_permission_settings(
             permission_mode=permission_mode,
             approval_policy=approval_policy,
             sandbox_mode=sandbox_mode,
@@ -873,7 +881,7 @@ async def bridge_claude_usage() -> dict[str, Any]:
 
     raw = await fetch_claude_usage()
     if raw is None:
-        raise HTTPException(status_code=502, detail="Unable to fetch Claude usage (no token or API error)")
+        return format_usage_summary({})
     return format_usage_summary(raw)
 
 

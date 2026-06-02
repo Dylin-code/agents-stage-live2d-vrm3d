@@ -38,7 +38,8 @@ except ValueError:
 # Agent brand constants
 AGENT_BRAND_CODEX = "codex"
 AGENT_BRAND_CLAUDE = "claude"
-SUPPORTED_AGENT_BRANDS = {AGENT_BRAND_CODEX, AGENT_BRAND_CLAUDE}
+AGENT_BRAND_OPENCODE = "opencode"
+SUPPORTED_AGENT_BRANDS = {AGENT_BRAND_CODEX, AGENT_BRAND_CLAUDE, AGENT_BRAND_OPENCODE}
 _FRONTEND_DIR_NAMES = ("agents-stage-live2d-vrm3d-fe", "live2d-assistant-fe")
 _BACKEND_DIR_NAMES = ("agents-stage-live2d-vrm3d-server", "live2d-assistant-server")
 

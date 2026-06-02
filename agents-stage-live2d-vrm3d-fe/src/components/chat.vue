@@ -439,6 +439,9 @@ const getInputPlaceholder = () => {
     if (brand === 'claude') {
       return '請輸入訊息，我會透過本地 Claude Session 繼續對話...'
     }
+    if (brand === 'opencode') {
+      return '請輸入訊息，我會透過 OpenCode 繼續對話...'
+    }
     return '請輸入訊息，我會透過本地 Agent Session 繼續對話...'
   }
   if (props.forceAgentic) {

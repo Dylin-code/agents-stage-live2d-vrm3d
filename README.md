@@ -7,7 +7,7 @@
 - Session / 對話 / 審批 / 品牌模型切換的整合操作
 - 可擴充的 3D 場景、互動點、行為流與 VRMA 動畫框架
 
-目前專案重心是 `Codex Session` 與 `Claude Code` 這類本地 agent CLI 的視覺化調度與舞台化呈現。
+目前專案重心是 `Codex Session`、`Claude Code`、`OpenCode` 這類本地 agent CLI 的視覺化調度與舞台化呈現。
 
 ## 重要更新：TUI Bridge（2026-05-25，取代舊 Web Terminal）
 
@@ -340,6 +340,7 @@ this list, call ``register_project`` to persist it ...
 
 - `Codex`
 - `Claude`
+- `OpenCode`
 
 支援能力包含：
 
@@ -354,6 +355,7 @@ this list, call ``register_project`` to persist it ...
 
 - `CODEX_SESSION_DIR`，預設 `~/.codex/sessions`
 - `CLAUDE_SESSION_DIR`，預設 `~/.claude/projects`
+- `OPENCODE_DATA_DIR`，預設 `~/.local/share/opencode`；後端會讀取 `opencode.db` 恢復 history / conversation
 
 ### 2. 2D Session Stage
 
@@ -428,7 +430,7 @@ v1 限制：
 
 - Session snapshot / history / conversation 聚合
 - WebSocket session event 推送
-- Codex / Claude brand router
+- Codex / Claude / OpenCode brand router
 - 統一 agent chat / approval / new session API
 - Live2D 預覽與動作語意映射 warmup
 
@@ -441,6 +443,7 @@ v1 限制：
 - `uv`
 - 已可在本機執行的 `codex` CLI
 - 如需 Claude 品牌，另需可在本機執行的 `claude` CLI
+- 如需 OpenCode 品牌，另需可在本機執行的 `opencode` CLI
 
 ## 安裝
 

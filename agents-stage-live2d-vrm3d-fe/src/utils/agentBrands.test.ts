@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   CODEX_AGENT_MODELS,
   DEFAULT_AGENT_BRANDS,
+  OPENCODE_AGENT_MODELS,
   buildAgentBrandCatalog,
   getAgentBrandDefaultPermissionMode,
   getAgentBrandModels,
@@ -80,6 +81,14 @@ describe('buildAgentBrandCatalog', () => {
     expect(CODEX_AGENT_MODELS).toContain('gpt-5.5-pro')
     expect(CODEX_AGENT_MODELS).toContain('gpt-5.4-mini')
     expect(DEFAULT_AGENT_BRANDS[0].models).toEqual(CODEX_AGENT_MODELS)
+  })
+
+  it('keeps OpenCode in the built-in fallback catalog', () => {
+    const opencode = DEFAULT_AGENT_BRANDS.find((brand) => brand.brand === 'opencode')
+    expect(opencode?.display_name).toBe('OpenCode')
+    expect(opencode?.badge_icon).toBe('/brand/opencode-badge.svg')
+    expect(opencode?.models).toEqual(OPENCODE_AGENT_MODELS)
+    expect(OPENCODE_AGENT_MODELS).toContain('opencode/deepseek-v4-flash-free')
   })
 
   it('prefers server catalog when present', () => {
