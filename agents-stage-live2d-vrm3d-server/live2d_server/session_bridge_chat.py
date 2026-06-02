@@ -21,6 +21,7 @@ from .session_bridge_shared import (
     _build_session_bridge_prompt,
     _ensure_stream_reader_limit,
     _extract_message_content,
+    _format_subprocess_spawn_error,
     _isolated_subprocess_kwargs,
     _kill_process_tree,
     _resolve_default_chat_cwd,
@@ -552,6 +553,10 @@ class CodexSessionChatService:
         except FileNotFoundError as exc:
             await self._cleanup_images(created_images)
             raise CodexSessionChatError(f"codex cli not found: {self.codex_bin}") from exc
+        except Exception as exc:
+            await self._cleanup_images(created_images)
+            detail = _format_subprocess_spawn_error(exc)
+            raise CodexSessionChatError(f"codex cli failed to start: {detail}") from exc
 
         await self._register_active_process(session_id_value, process)
         start_mono = time.monotonic()
@@ -882,13 +887,19 @@ class CodexSessionChatService:
             cmd,
         )
 
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=cwd_value,
-            env=self._build_codex_subprocess_env(),
-        )
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=cwd_value,
+                env=self._build_codex_subprocess_env(),
+            )
+        except FileNotFoundError as exc:
+            raise CodexSessionChatError(f"codex cli not found: {self.codex_bin}") from exc
+        except Exception as exc:
+            detail = _format_subprocess_spawn_error(exc)
+            raise CodexSessionChatError(f"codex cli failed to start: {detail}") from exc
         try:
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=self.max_timeout_sec)
         except asyncio.TimeoutError as exc:

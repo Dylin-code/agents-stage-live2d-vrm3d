@@ -21,6 +21,17 @@
         >
           <option v-for="name in themeNames" :key="name" :value="name">{{ name }}</option>
         </select>
+        <input
+          type="range"
+          class="tui-bridge-opacity"
+          min="0.25"
+          max="1"
+          step="0.05"
+          :value="opacity"
+          :title="`視窗透明度：${Math.round(opacity * 100)}%（手機模式可看到背後角色）`"
+          @input="onOpacityChange"
+          @pointerdown.stop
+        >
         <button
           class="tui-bridge-btn"
           :class="{ active: keyToolbarVisible }"
@@ -155,12 +166,75 @@ const containerStyle = computed(() => ({
   top: `${posY.value}px`,
   width: `${width.value}px`,
   height: `${height.value}px`,
+  // CSS var consumed by header / key-toolbar bg rgba in <style>.
+  '--tui-opacity': String(opacity.value),
 }))
+
+const OPACITY_KEY = 'tui-bridge-opacity'
+const OPACITY_MIN = 0.25
+
+function loadOpacity(): number {
+  const raw = parseFloat(localStorage.getItem(OPACITY_KEY) || '1')
+  if (!Number.isFinite(raw)) return 1
+  return Math.min(1, Math.max(OPACITY_MIN, raw))
+}
+
+const opacity = ref<number>(loadOpacity())
+
+function withAlpha(color: string | undefined, alpha: number): string {
+  const fallback = `rgba(30, 30, 46, ${alpha})`
+  if (!color) return fallback
+  const c = color.trim()
+  if (c.startsWith('rgb')) {
+    const nums = c.match(/[\d.]+/g)
+    if (nums && nums.length >= 3) {
+      const [r, g, b] = nums.slice(0, 3).map(Number)
+      return `rgba(${r}, ${g}, ${b}, ${alpha})`
+    }
+    return fallback
+  }
+  const h = c.replace('#', '')
+  const parseHex = (s: string) => parseInt(s, 16)
+  if (h.length === 3) {
+    return `rgba(${parseHex(h[0]+h[0])}, ${parseHex(h[1]+h[1])}, ${parseHex(h[2]+h[2])}, ${alpha})`
+  }
+  if (h.length >= 6) {
+    return `rgba(${parseHex(h.slice(0,2))}, ${parseHex(h.slice(2,4))}, ${parseHex(h.slice(4,6))}, ${alpha})`
+  }
+  return fallback
+}
+
+function onOpacityChange(e: Event): void {
+  const v = parseFloat((e.target as HTMLInputElement).value)
+  if (!Number.isFinite(v)) return
+  opacity.value = Math.min(1, Math.max(OPACITY_MIN, v))
+  localStorage.setItem(OPACITY_KEY, String(opacity.value))
+  // Re-apply theme so xterm canvas bg picks up the new alpha.
+  applyTheme(currentThemeName.value)
+}
 
 const currentThemeName = ref(loadThemeName())
 
 function isMobileViewport(): boolean {
   return typeof window !== 'undefined' && window.innerWidth < MOBILE_BREAKPOINT
+}
+
+function isTouchDevice(): boolean {
+  if (typeof window === 'undefined') return false
+  return (
+    'ontouchstart' in window ||
+    (window.matchMedia && window.matchMedia('(pointer: coarse)').matches)
+  )
+}
+
+/** On mobile, calling ``terminal.focus()`` puts focus on xterm's hidden
+ *  ``<textarea>`` which forces the soft IME keyboard to slide up and
+ *  cover the toolbar. Skip the focus on touch devices so taps on the
+ *  shortcut keys don't keep popping the keyboard. Users can still tap
+ *  the terminal body to bring up the keyboard explicitly. */
+function focusTerminalIfDesktop(): void {
+  if (isTouchDevice()) return
+  terminal?.focus()
 }
 
 // On mobile the soft-keyboard cannot send Shift+Tab / arrows / Ctrl-letter,
@@ -183,7 +257,7 @@ function sendBytes(data: string): void {
 
 function onToolbarSend(bytes: string): void {
   sendBytes(bytes)
-  terminal?.focus()
+  focusTerminalIfDesktop()
 }
 
 function toggleKeyToolbar(): void {
@@ -197,11 +271,23 @@ function toggleKeyToolbarExpanded(): void {
 }
 
 function applyTheme(name: string) {
-  const theme = getTheme(name)
+  const base = getTheme(name)
   currentThemeName.value = name
   saveThemeName(name)
-  if (terminal) terminal.options.theme = theme
-  if (containerRef.value) containerRef.value.style.background = theme.background ?? '#1e1e2e'
+  const baseBg = base.background ?? '#1e1e2e'
+  const bgWithAlpha = withAlpha(baseBg, opacity.value)
+  // @xterm/xterm v6 uses a DOM renderer by default; ``allowTransparency``
+  // is a no-op there and ``theme.background`` is stamped as inline style
+  // on ``.xterm-viewport`` / ``.xterm-screen`` (opaque, always). Keep the
+  // theme bg fully opaque (so cells with default bg still look right when
+  // opacity=1) and instead paint our own rgba bg on ``.tui-bridge-body``;
+  // CSS overrides below force xterm's wrappers to transparent so the
+  // single rgba layer underneath wins.
+  if (terminal) terminal.options.theme = { ...base, background: baseBg }
+  if (containerRef.value) {
+    containerRef.value.style.background = bgWithAlpha
+    containerRef.value.style.setProperty('--tui-body-bg', bgWithAlpha)
+  }
 }
 
 function onThemeChange(e: Event) {
@@ -212,12 +298,12 @@ function onThemeChange(e: Event) {
 function createTerminal() {
   if (!terminalRef.value) return
 
-  const theme = getTheme(currentThemeName.value)
+  const base = getTheme(currentThemeName.value)
   terminal = new Terminal({
     cursorBlink: true,
     fontSize: 14,
     fontFamily: '"Cascadia Code", Menlo, Monaco, "Courier New", monospace',
-    theme,
+    theme: base,
     scrollback: 5000,
   })
   fitAddon = new FitAddon()
@@ -380,8 +466,11 @@ function onWindowResize() {
 onMounted(async () => {
   await nextTick()
   createTerminal()
+  // Stamp the bg-with-alpha onto the container + body so the opacity
+  // slider has an effect from the first paint.
+  applyTheme(currentThemeName.value)
   connectWs()
-  terminal?.focus()
+  focusTerminalIfDesktop()
 
   resizeObserver = new ResizeObserver(() => fitTerminal())
   if (terminalRef.value) resizeObserver.observe(terminalRef.value)
@@ -407,8 +496,8 @@ onBeforeUnmount(() => {
   flex-direction: column;
   border-radius: 8px;
   overflow: hidden;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.55);
-  border: 1px solid #4a5568;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, calc(0.55 * var(--tui-opacity, 1)));
+  border: 1px solid rgba(74, 85, 104, var(--tui-opacity, 1));
   background: #1e1e2e;
   max-width: 100vw;
   max-height: 100vh;
@@ -421,7 +510,9 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   height: 32px;
   padding: 0 10px;
-  background: #2a324a;
+  /* Header bg tracks the same alpha so the whole window goes translucent
+     together — header text stays solid because we only alpha the bg. */
+  background: rgba(42, 50, 74, var(--tui-opacity, 1));
   cursor: grab;
   user-select: none;
   flex-shrink: 0;
@@ -463,6 +554,18 @@ onBeforeUnmount(() => {
   outline: none;
 }
 
+.tui-bridge-opacity {
+  width: 80px;
+  height: 22px;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  accent-color: #89b4fa;
+  background: transparent;
+  /* Slightly larger hit area on touch devices via padding. */
+  flex-shrink: 0;
+}
+
 .tui-bridge-btn {
   background: none;
   border: none;
@@ -485,6 +588,23 @@ onBeforeUnmount(() => {
 .tui-bridge-body {
   flex: 1;
   overflow: hidden;
+  /* applyTheme() stamps --tui-body-bg with rgba(theme-bg, opacity). xterm's
+     own wrappers are forced transparent below so this is the *only* layer
+     of bg colour behind the characters — no compound-alpha darkening. */
+  background: var(--tui-body-bg, #1e1e2e);
+}
+
+/* xterm.js v6 DOM renderer paints the theme bg as inline-style on multiple
+   wrapping layers; without these overrides those opaque layers sit on top
+   of our rgba bg and the character behind never shows through. Notably
+   ``.xterm-scrollable-element`` is the one most folks miss — it covers
+   the entire viewport interior and is not in xterm's css file. */
+.tui-bridge-body :deep(.xterm),
+.tui-bridge-body :deep(.xterm-viewport),
+.tui-bridge-body :deep(.xterm-screen),
+.tui-bridge-body :deep(.xterm-scrollable-element),
+.tui-bridge-body :deep(.xterm-rows) {
+  background-color: transparent !important;
 }
 
 .tui-bridge-resize-handle {
@@ -511,7 +631,8 @@ onBeforeUnmount(() => {
 
 @media (max-width: 640px) {
   .tui-bridge-title { font-size: 11px; }
-  .tui-bridge-theme-select { max-width: 90px; font-size: 10px; }
+  .tui-bridge-theme-select { max-width: 70px; font-size: 10px; }
+  .tui-bridge-opacity { width: 56px; }
   .tui-bridge-resize-handle { width: 36px; height: 36px; }
 }
 </style>

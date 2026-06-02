@@ -93,6 +93,18 @@ def _isolated_subprocess_kwargs() -> dict[str, Any]:
     return {"start_new_session": True}
 
 
+def _format_subprocess_spawn_error(exc: BaseException) -> str:
+    detail = str(exc).strip()
+    if detail:
+        return detail
+    if sys.platform == "win32" and isinstance(exc, NotImplementedError):
+        return (
+            "asyncio subprocess is unavailable on the current Windows event loop; "
+            "start the backend with WindowsProactorEventLoopPolicy"
+        )
+    return exc.__class__.__name__
+
+
 def _kill_process_tree(process: asyncio.subprocess.Process) -> None:
     """Kill a subprocess **and every descendant it spawned**.
 
