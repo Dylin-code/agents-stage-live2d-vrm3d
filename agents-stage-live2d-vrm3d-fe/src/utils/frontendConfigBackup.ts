@@ -4,6 +4,7 @@ import {
 } from '../components/session-stage/vrmActorSlotSettings'
 import { VRM_ACTOR_SCALE_DEFAULT, VRM_ACTOR_SCALE_STORAGE_KEY } from '../components/session-stage/vrmActorScaleSettings'
 import { VRM_GLOBAL_GROUND_OFFSET_STORAGE_KEY } from '../components/session-stage/vrmGroundOffsetSettings'
+import { POWER_SAVE_MODE_STORAGE_KEY } from '../components/session-stage/powerSaveModeSettings'
 import { buildDefaultSystemSettings } from '../pages/session-stage/sessionStageDefaults'
 
 export const FRONTEND_CONFIG_BACKUP_SCHEMA_VERSION = 1
@@ -34,6 +35,7 @@ export interface StorageLike {
 
 const MANAGED_STORAGE_EXACT_KEYS = [
   FRONTEND_CONFIG_SETTINGS_STORAGE_KEY,
+  POWER_SAVE_MODE_STORAGE_KEY,
   VRM_ACTOR_SCALE_STORAGE_KEY,
   VRM_GLOBAL_GROUND_OFFSET_STORAGE_KEY,
   VRM_ACTOR_SLOT_CONFIG_STORAGE_KEY,
@@ -128,6 +130,7 @@ export function createDefaultFrontendConfigBackup(): FrontendConfigBackupPayload
       [FRONTEND_CONFIG_SETTINGS_STORAGE_KEY]: JSON.stringify({
         systemSettings: buildDefaultSystemSettings(),
       }),
+      [POWER_SAVE_MODE_STORAGE_KEY]: 'false',
       [VRM_ACTOR_SCALE_STORAGE_KEY]: String(VRM_ACTOR_SCALE_DEFAULT),
       [VRM_GLOBAL_GROUND_OFFSET_STORAGE_KEY]: '0',
       [VRM_ACTOR_SLOT_CONFIG_STORAGE_KEY]: JSON.stringify(buildDefaultVrmActorSlotConfig()),

@@ -61,3 +61,7 @@ config/stage-settings.json
 # Master agent runtime state — conversation history and TG bindings
 # contain real user content & PII (chat_id, tg user_id, usernames).
 config/master-agent/
+/CLAUDE.md
+/wiki/
+/.wiki-compiler.json
+/.playwright-mcp/

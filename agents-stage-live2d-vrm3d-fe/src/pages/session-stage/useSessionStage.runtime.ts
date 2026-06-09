@@ -50,6 +50,11 @@ import {
   saveChatUiState,
   saveSessionAgentOptionsMap,
 } from '../../utils/uiStateCache'
+import {
+  POWER_SAVE_MODE_EVENT,
+  loadPowerSaveMode,
+  type PowerSaveModeEventDetail,
+} from '../../components/session-stage/powerSaveModeSettings'
 
 Live2DModelCubism4.registerTicker(PIXI.Ticker)
 Live2DModelCubism2.registerTicker(PIXI.Ticker)
@@ -105,11 +110,13 @@ const conversationSyncQueued = new Set<string>()
 
 let app: PIXI.Application | null = null
 let stageVisibilityHandler: (() => void) | null = null
+let powerSaveModeHandler: ((event: Event) => void) | null = null
 let ws: WebSocket | null = null
 let reconnectTimer: number | null = null
 let reconnectAttempt = 0
 let disposed = false
 let lastVisibilitySyncMs = 0
+let powerSaveMode = loadPowerSaveMode()
 
 let serverUrl = getDefaultServerUrl()
 let bridgeUrl = getDefaultBridgeWsUrl()
@@ -992,6 +999,23 @@ function onCanvasContextMenu(event: MouseEvent): void {
   event.preventDefault()
 }
 
+function syncLive2DPowerSaveState(): void {
+  if (!app) return
+  if (document.hidden || powerSaveMode) {
+    app.ticker.stop()
+  } else {
+    app.ticker.start()
+  }
+}
+
+function handlePowerSaveModeChange(event: Event): void {
+  const customEvent = event as CustomEvent<PowerSaveModeEventDetail>
+  powerSaveMode = typeof customEvent.detail?.enabled === 'boolean'
+    ? customEvent.detail.enabled
+    : loadPowerSaveMode()
+  syncLive2DPowerSaveState()
+}
+
 watch(chatModalVisible, (visible) => {
   if (!visible) {
     for (const session of Object.values(sessionStore)) {
@@ -1055,7 +1079,7 @@ onMounted(async () => {
     app = new PIXI.Application({
       view: stageCanvas.value,
       transparent: true,
-      autoStart: true,
+      autoStart: !powerSaveMode,
       width: window.innerWidth,
       height: window.innerHeight,
       backgroundAlpha: 0,
@@ -1066,14 +1090,12 @@ onMounted(async () => {
     stageCanvas.value.addEventListener('contextmenu', onCanvasContextMenu)
 
     stageVisibilityHandler = () => {
-      if (!app) return
-      if (document.hidden) {
-        app.ticker.stop()
-      } else {
-        app.ticker.start()
-      }
+      syncLive2DPowerSaveState()
     }
     document.addEventListener('visibilitychange', stageVisibilityHandler)
+    powerSaveModeHandler = handlePowerSaveModeChange
+    window.addEventListener(POWER_SAVE_MODE_EVENT, powerSaveModeHandler)
+    syncLive2DPowerSaveState()
   }
 
   // 先把上次離開時保存的 agent 設定撈進來，再去 fetch history；
@@ -1118,6 +1140,10 @@ onUnmounted(() => {
   if (stageVisibilityHandler) {
     document.removeEventListener('visibilitychange', stageVisibilityHandler)
     stageVisibilityHandler = null
+  }
+  if (powerSaveModeHandler) {
+    window.removeEventListener(POWER_SAVE_MODE_EVENT, powerSaveModeHandler)
+    powerSaveModeHandler = null
   }
   if (app) {
     app.destroy(true)

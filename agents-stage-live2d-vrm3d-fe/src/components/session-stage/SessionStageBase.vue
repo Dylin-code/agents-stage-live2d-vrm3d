@@ -19,6 +19,15 @@
       <div class="status-chip neutral">Active: {{ activeCount }}/{{ MAX_SESSIONS }}</div>
       <div class="status-chip neutral">{{ globalRateLimitText }}</div>
       <div class="status-chip neutral">{{ claudeUsageText }}</div>
+      <button
+        class="stage-view-switch power-save-toggle"
+        :class="{ active: powerSaveMode }"
+        type="button"
+        :aria-pressed="powerSaveMode"
+        @click="togglePowerSaveMode"
+      >
+        {{ powerSaveMode ? '省電模式: 開' : '省電模式: 關' }}
+      </button>
       <button class="stage-view-switch" type="button" @click="switchView">
         {{ switchButtonText }}
       </button>
@@ -574,6 +583,12 @@ import {
   VRM_INTERACTION_POINTS_RELOAD_EVENT,
 } from './vrmInteractionPointEvents'
 import {
+  POWER_SAVE_MODE_EVENT,
+  loadPowerSaveMode,
+  savePowerSaveMode,
+  type PowerSaveModeEventDetail,
+} from './powerSaveModeSettings'
+import {
   applyFrontendConfigBackup,
   createFrontendConfigBackup,
   listManagedFrontendStorageKeys,
@@ -596,6 +611,7 @@ const vrmGlobalGroundOffset = ref(0)
 const vrmActorScale = ref(VRM_ACTOR_SCALE_DEFAULT)
 const vrmActorSlotOptions = DEFAULT_VRM_ACTOR_SLOT_OPTIONS
 const vrmActorSlotConfig = ref<string[]>(loadVrmActorSlotConfig(vrmActorSlotOptions))
+const powerSaveMode = ref(loadPowerSaveMode())
 const frontendConfigFileInput = ref<HTMLInputElement | null>(null)
 const personaEditorVisible = ref(false)
 const personaEditorDrafts = ref<CharacterPersona[]>([])
@@ -686,6 +702,18 @@ function toggleInteractionEditor(): void {
 function reloadInteractionPoints(): void {
   roleSettingsCollapsed.value = true
   window.dispatchEvent(new CustomEvent(VRM_INTERACTION_POINTS_RELOAD_EVENT))
+}
+
+function applyPowerSaveMode(enabled: boolean): void {
+  const next = savePowerSaveMode(enabled)
+  powerSaveMode.value = next
+  window.dispatchEvent(new CustomEvent<PowerSaveModeEventDetail>(POWER_SAVE_MODE_EVENT, {
+    detail: { enabled: next },
+  }))
+}
+
+function togglePowerSaveMode(): void {
+  applyPowerSaveMode(!powerSaveMode.value)
 }
 
 function openPersonaEditor(): void {
@@ -1041,6 +1069,16 @@ canvas {
 
 .stage-view-switch:hover {
   background: rgba(17, 49, 82, 0.9);
+}
+
+.power-save-toggle.active {
+  border-color: rgba(120, 232, 176, 0.52);
+  background: rgba(15, 94, 61, 0.78);
+  color: #d9ffe9;
+}
+
+.power-save-toggle.active:hover {
+  background: rgba(19, 112, 74, 0.86);
 }
 
 .stage-view-switch.master-agent-link {

@@ -10,6 +10,7 @@ import {
   listManagedFrontendStorageKeys,
   parseFrontendConfigBackup,
 } from './frontendConfigBackup'
+import { POWER_SAVE_MODE_STORAGE_KEY } from '../components/session-stage/powerSaveModeSettings'
 
 class MemoryStorage {
   private readonly storage = new Map<string, string>()
@@ -39,11 +40,13 @@ describe('frontendConfigBackup', () => {
   it('collects only managed frontend storage keys', () => {
     const storage = new MemoryStorage()
     storage.setItem(FRONTEND_CONFIG_SETTINGS_STORAGE_KEY, '{"systemSettings":{}}')
+    storage.setItem(POWER_SAVE_MODE_STORAGE_KEY, 'true')
     storage.setItem(`${FRONTEND_CONFIG_INTERACTION_POINTS_STORAGE_KEY_PREFIX}scene.glb`, '{"points":[]}')
     storage.setItem('unrelated-key', 'ignore-me')
 
     expect(listManagedFrontendStorageKeys(storage)).toEqual([
       FRONTEND_CONFIG_SETTINGS_STORAGE_KEY,
+      POWER_SAVE_MODE_STORAGE_KEY,
       `${FRONTEND_CONFIG_INTERACTION_POINTS_STORAGE_KEY_PREFIX}scene.glb`,
     ])
 
@@ -53,6 +56,7 @@ describe('frontendConfigBackup', () => {
       exportedAt: '2026-03-20T00:00:00.000Z',
       entries: {
         [FRONTEND_CONFIG_SETTINGS_STORAGE_KEY]: '{"systemSettings":{}}',
+        [POWER_SAVE_MODE_STORAGE_KEY]: 'true',
         [`${FRONTEND_CONFIG_INTERACTION_POINTS_STORAGE_KEY_PREFIX}scene.glb`]: '{"points":[]}',
       },
     })
@@ -88,6 +92,7 @@ describe('frontendConfigBackup', () => {
     const backup = createDefaultFrontendConfigBackup()
     expect(backup.schemaVersion).toBe(1)
     expect(Object.keys(backup.entries)).toContain(FRONTEND_CONFIG_SETTINGS_STORAGE_KEY)
+    expect(backup.entries[POWER_SAVE_MODE_STORAGE_KEY]).toBe('false')
     expect(JSON.parse(backup.entries[FRONTEND_CONFIG_SETTINGS_STORAGE_KEY] || '{}')).toMatchObject({
       systemSettings: {
         serverUrl: 'http://127.0.0.1:8000',

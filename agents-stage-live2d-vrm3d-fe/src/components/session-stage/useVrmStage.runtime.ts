@@ -43,6 +43,11 @@ import {
   loadVrmActorSlotConfig,
   normalizeVrmActorSlotConfig,
 } from './vrmActorSlotSettings'
+import {
+  POWER_SAVE_MODE_EVENT,
+  loadPowerSaveMode,
+  type PowerSaveModeEventDetail,
+} from './powerSaveModeSettings'
 import type { StoredCameraView } from './vrmRouteCameraUtils'
 
 interface UseVrmStageOptions {
@@ -199,7 +204,9 @@ export function useVrmStage(options: UseVrmStageOptions) {
   let frameAccumulator = 0
   let destroyed = false
   let paused = false
+  let powerSaveMode = loadPowerSaveMode()
   let visibilityHandler: (() => void) | null = null
+  let powerSaveModeHandler: ((event: Event) => void) | null = null
   let stageSceneRoot: THREE.Object3D | null = null
   let stageSeatCenter: THREE.Vector3 | null = null
   let stageSeatSpread = { x: 1.1, z: 0.7 }
@@ -241,6 +248,75 @@ export function useVrmStage(options: UseVrmStageOptions) {
   let actorMountSequence = 0
   let syncActorsRunning = false
   let syncActorsPending = false
+
+  function shouldRunAnimationLoop(): boolean {
+    return !destroyed && !paused && !powerSaveMode && !document.hidden
+  }
+
+  function cancelAnimationLoop(): void {
+    if (animationFrameId === null) return
+    window.cancelAnimationFrame(animationFrameId)
+    animationFrameId = null
+  }
+
+  function renderCurrentFrame(): void {
+    if (!scene || !camera) return
+    renderer?.render(scene, camera)
+    labelRenderer?.render(scene, camera)
+  }
+
+  function startAnimationLoop(): void {
+    if (animationFrameId !== null || !shouldRunAnimationLoop()) return
+    clock.getDelta()
+    frameAccumulator = 0
+    animationFrameId = window.requestAnimationFrame(tick)
+  }
+
+  function tick(): void {
+    animationFrameId = null
+    if (!shouldRunAnimationLoop()) return
+
+    const delta = clock.getDelta()
+    frameAccumulator += delta
+    if (frameAccumulator >= FRAME_INTERVAL) {
+      const stepDelta = frameAccumulator
+      frameAccumulator = 0
+      const now = clock.elapsedTime
+      for (const actor of actors) {
+        actor.vrm.update(stepDelta)
+        actor.mixer.update(stepDelta)
+        lockActorRootMotion(actor)
+        const jumpLift = getJumpLift(actor, now)
+        updateRoamingActor(actor, now, stepDelta)
+        actor.root.position.lerp(actor.targetPosition, 0.08)
+        actor.root.position.y = actor.targetPosition.y + jumpLift
+      }
+      updateCameraFocus(stepDelta)
+      if (!isCameraFocusing()) {
+        controls?.update()
+      }
+      renderCurrentFrame()
+    }
+
+    if (shouldRunAnimationLoop()) {
+      animationFrameId = window.requestAnimationFrame(tick)
+    }
+  }
+
+  function handlePowerSaveModeChange(event: Event): void {
+    const customEvent = event as CustomEvent<PowerSaveModeEventDetail>
+    powerSaveMode = typeof customEvent.detail?.enabled === 'boolean'
+      ? customEvent.detail.enabled
+      : loadPowerSaveMode()
+
+    if (powerSaveMode) {
+      cancelAnimationLoop()
+      renderCurrentFrame()
+      return
+    }
+
+    startAnimationLoop()
+  }
 
   function stateText(state: SessionState): string {
     const normalized = String(state || 'IDLE').toUpperCase() as SessionState
@@ -533,6 +609,9 @@ export function useVrmStage(options: UseVrmStageOptions) {
   const handleControlsChange = (): void => {
     if (suppressCameraViewSave || isCameraFocusing()) return
     scheduleSaveCameraView()
+    if (powerSaveMode) {
+      renderCurrentFrame()
+    }
   }
 
   const { rebuildStageObstacles, loadStageScene, setupLights } = createVrmSceneSetupUtils({
@@ -1025,6 +1104,13 @@ export function useVrmStage(options: UseVrmStageOptions) {
     getInteractionPointsCount: () => interactionPointUtils.getInteractionPoints().length,
   })
 
+  function handleResize(): void {
+    onResize()
+    if (powerSaveMode) {
+      renderCurrentFrame()
+    }
+  }
+
   function assignRouteIndexForActor(actor: VrmActor): void {
     const routePoints = getRoutePointsByModel(actor.modelUrl)
     if (routePoints.length < 2) {
@@ -1433,6 +1519,9 @@ export function useVrmStage(options: UseVrmStageOptions) {
       await createActor(session, targetModelUrl, actor.stageSlot)
     }
     updateAllHeadLabels()
+    if (powerSaveMode) {
+      renderCurrentFrame()
+    }
   }
 
   async function syncActorsWithSessions(): Promise<void> {
@@ -1506,6 +1595,9 @@ export function useVrmStage(options: UseVrmStageOptions) {
 
     updateAllHeadLabels()
     setLoadingText(actors.length ? '' : '等待 Session 資料...')
+    if (powerSaveMode) {
+      renderCurrentFrame()
+    }
   }
 
   async function ensureSessionOnStageSerialized(session: SessionSnapshotItem, triggerJump = false): Promise<void> {
@@ -1518,6 +1610,9 @@ export function useVrmStage(options: UseVrmStageOptions) {
       await ensureSessionOnStage(session, triggerJump)
     } finally {
       syncActorsRunning = false
+      if (powerSaveMode) {
+        renderCurrentFrame()
+      }
       if (syncActorsPending) {
         syncActorsPending = false
         void syncActorsWithSessions()
@@ -1612,74 +1707,43 @@ export function useVrmStage(options: UseVrmStageOptions) {
     controls.addEventListener('change', handleControlsChange)
 
     renderer.domElement.addEventListener('pointerdown', onPointerDown)
-    window.addEventListener('resize', onResize)
+    window.addEventListener('resize', handleResize)
     window.addEventListener('keydown', onKeyDown)
     window.addEventListener('session-stage:sidebar-session-click', handleSidebarSessionClick as EventListener)
 
     await syncActorsWithSessions()
-
-    const tick = () => {
-      if (destroyed || paused) return
-      animationFrameId = window.requestAnimationFrame(tick)
-      const delta = clock.getDelta()
-      frameAccumulator += delta
-      if (frameAccumulator < FRAME_INTERVAL) {
-        return
-      }
-      const stepDelta = frameAccumulator
-      frameAccumulator = 0
-      const now = clock.elapsedTime
-      for (const actor of actors) {
-        actor.vrm.update(stepDelta)
-        actor.mixer.update(stepDelta)
-        lockActorRootMotion(actor)
-        const jumpLift = getJumpLift(actor, now)
-        updateRoamingActor(actor, now, stepDelta)
-        actor.root.position.lerp(actor.targetPosition, 0.08)
-        actor.root.position.y = actor.targetPosition.y + jumpLift
-      }
-      updateCameraFocus(stepDelta)
-      if (!isCameraFocusing()) {
-        controls?.update()
-      }
-      if (scene && camera) {
-        renderer?.render(scene, camera)
-        labelRenderer?.render(scene, camera)
-      }
-    }
+    renderCurrentFrame()
 
     visibilityHandler = () => {
       if (destroyed) return
       if (document.hidden) {
         paused = true
-        if (animationFrameId !== null) {
-          window.cancelAnimationFrame(animationFrameId)
-          animationFrameId = null
-        }
+        cancelAnimationLoop()
       } else if (paused) {
         paused = false
-        clock.getDelta() // 丟棄背景期間累積的時間差，避免回前景時動畫瞬跳
-        frameAccumulator = 0
-        tick()
+        startAnimationLoop()
       }
     }
     document.addEventListener('visibilitychange', visibilityHandler)
+    powerSaveModeHandler = handlePowerSaveModeChange
+    window.addEventListener(POWER_SAVE_MODE_EVENT, powerSaveModeHandler)
 
-    tick()
+    startAnimationLoop()
   }
 
   function destroy(): void {
     destroyed = true
-    if (animationFrameId !== null) {
-      window.cancelAnimationFrame(animationFrameId)
-      animationFrameId = null
-    }
-    window.removeEventListener('resize', onResize)
+    cancelAnimationLoop()
+    window.removeEventListener('resize', handleResize)
     window.removeEventListener('keydown', onKeyDown)
     window.removeEventListener('session-stage:sidebar-session-click', handleSidebarSessionClick as EventListener)
     if (visibilityHandler) {
       document.removeEventListener('visibilitychange', visibilityHandler)
       visibilityHandler = null
+    }
+    if (powerSaveModeHandler) {
+      window.removeEventListener(POWER_SAVE_MODE_EVENT, powerSaveModeHandler)
+      powerSaveModeHandler = null
     }
     renderer?.domElement.removeEventListener('pointerdown', onPointerDown)
     controls?.removeEventListener('change', handleControlsChange)
@@ -1786,6 +1850,9 @@ export function useVrmStage(options: UseVrmStageOptions) {
         actor.targetPosition.y = actor.groundOffsetY + value
         actor.roamTarget.y = actor.groundOffsetY + value
       }
+      if (powerSaveMode) {
+        renderCurrentFrame()
+      }
     },
   )
 
@@ -1796,6 +1863,9 @@ export function useVrmStage(options: UseVrmStageOptions) {
       for (const actor of actors) {
         applyActorScale(actor, value)
       }
+      if (powerSaveMode) {
+        renderCurrentFrame()
+      }
     },
   )
 
@@ -1803,6 +1873,9 @@ export function useVrmStage(options: UseVrmStageOptions) {
     interactionTransformTarget,
     () => {
       syncInteractionTransformControls()
+      if (powerSaveMode) {
+        renderCurrentFrame()
+      }
     },
   )
 
