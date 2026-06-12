@@ -100,10 +100,14 @@ import { resolveTuiBridgeWsUrl, killTuiSession } from '../../utils/api/tuiBridge
 import { themeNames, getTheme, loadThemeName, saveThemeName } from './terminalThemes'
 import TuiKeyToolbar from './TuiKeyToolbar.vue'
 import {
-  createForcedSelectionMouseEvent,
+  buildTerminalSelectionRange,
+  getCopyableTerminalSelectionText,
+  getTerminalCellPoint,
   getTerminalSelectionText,
   isMouseEventClientSelectionCandidate,
   shouldHandleTerminalCopyShortcut,
+  type TerminalCellPoint,
+  type TerminalViewportMetrics,
   writeSelectionToClientClipboard,
   writeSelectionToClipboardEvent,
 } from './terminalClientClipboard'
@@ -268,6 +272,7 @@ const keyToolbarVisible = ref(isMobileViewport())
 const keyToolbarExpanded = ref(false)
 const clientSelectionMode = ref(false)
 const hasClientSelection = ref(false)
+const clientSelectionText = ref('')
 
 let terminal: Terminal | null = null
 let fitAddon: FitAddon | null = null
@@ -275,6 +280,7 @@ let ws: WebSocket | null = null
 let resizeObserver: ResizeObserver | null = null
 let selectionChangeDisposable: IDisposable | null = null
 let terminalDomDisposers: Array<() => void> = []
+let clientDragStart: TerminalCellPoint | null = null
 
 function sendBytes(data: string): void {
   if (!data) return
@@ -312,11 +318,13 @@ function isXtermMouseEventsMode(): boolean {
 }
 
 function refreshClientSelectionState(): void {
-  hasClientSelection.value = Boolean(terminal?.hasSelection())
+  const liveSelectionText = getTerminalSelectionText(terminal)
+  if (liveSelectionText) clientSelectionText.value = liveSelectionText
+  hasClientSelection.value = Boolean(liveSelectionText || clientSelectionText.value)
 }
 
 async function copyClientSelection(): Promise<void> {
-  const text = getTerminalSelectionText(terminal)
+  const text = getCopyableTerminalSelectionText(terminal, clientSelectionText.value)
   if (!text) {
     refreshClientSelectionState()
     return
@@ -329,26 +337,93 @@ async function copyClientSelection(): Promise<void> {
 }
 
 function onTerminalCopy(event: ClipboardEvent): void {
-  const text = getTerminalSelectionText(terminal)
+  const text = getCopyableTerminalSelectionText(terminal, clientSelectionText.value)
   if (writeSelectionToClipboardEvent(event, text)) refreshClientSelectionState()
 }
 
 function onTerminalKeyDown(event: KeyboardEvent): void {
   if (!shouldHandleTerminalCopyShortcut(event)) return
-  const text = getTerminalSelectionText(terminal)
+  const text = getCopyableTerminalSelectionText(terminal, clientSelectionText.value)
   if (!text) return
   event.preventDefault()
   event.stopPropagation()
   void copyClientSelection()
 }
 
+function getTerminalScreenElement(): HTMLElement | null {
+  return terminalRef.value?.querySelector('.xterm-screen') ?? null
+}
+
+function getTerminalViewportMetrics(): TerminalViewportMetrics | null {
+  const screen = getTerminalScreenElement()
+  if (!terminal || !screen) return null
+  return {
+    cols: terminal.cols,
+    rows: terminal.rows,
+    screenRect: screen.getBoundingClientRect(),
+    viewportY: terminal.buffer.active.viewportY,
+  }
+}
+
+function stopClientSelectionMouseEvent(event: MouseEvent): void {
+  event.preventDefault()
+  event.stopPropagation()
+  event.stopImmediatePropagation()
+}
+
+function selectClientDragRange(event: MouseEvent): void {
+  if (!terminal || !clientDragStart) return
+  const metrics = getTerminalViewportMetrics()
+  if (!metrics) return
+  const end = getTerminalCellPoint(event, metrics)
+  if (!end) return
+  const range = buildTerminalSelectionRange(clientDragStart, end, metrics.cols)
+  if (!range) {
+    terminal.clearSelection()
+    refreshClientSelectionState()
+    return
+  }
+  terminal.select(range.column, range.row, range.length)
+  clientSelectionText.value = getTerminalSelectionText(terminal)
+  refreshClientSelectionState()
+}
+
 function onTerminalMouseDownCapture(event: MouseEvent): void {
   if (!clientSelectionMode.value || !isXtermMouseEventsMode()) return
   if (!isMouseEventClientSelectionCandidate(event)) return
 
-  event.preventDefault()
-  event.stopImmediatePropagation()
-  event.target?.dispatchEvent(createForcedSelectionMouseEvent(event))
+  const metrics = getTerminalViewportMetrics()
+  if (!metrics) return
+  const start = getTerminalCellPoint(event, metrics)
+  if (!start) return
+
+  stopClientSelectionMouseEvent(event)
+  clientDragStart = start
+  clientSelectionText.value = ''
+  terminal?.clearSelection()
+  refreshClientSelectionState()
+  window.addEventListener('mousemove', onClientSelectionMouseMove, true)
+  window.addEventListener('mouseup', onClientSelectionMouseUp, true)
+}
+
+function onClientSelectionMouseMove(event: MouseEvent): void {
+  if (!clientDragStart) return
+  stopClientSelectionMouseEvent(event)
+  selectClientDragRange(event)
+}
+
+function onClientSelectionMouseUp(event: MouseEvent): void {
+  if (!clientDragStart) return
+  stopClientSelectionMouseEvent(event)
+  selectClientDragRange(event)
+  clientDragStart = null
+  detachClientSelectionDragListeners()
+  refreshClientSelectionState()
+}
+
+function detachClientSelectionDragListeners(): void {
+  window.removeEventListener('mousemove', onClientSelectionMouseMove, true)
+  window.removeEventListener('mouseup', onClientSelectionMouseUp, true)
 }
 
 function addTerminalDomListener<K extends keyof HTMLElementEventMap>(
@@ -372,6 +447,10 @@ function attachTerminalClientClipboardHandlers(): void {
 function detachTerminalClientClipboardHandlers(): void {
   selectionChangeDisposable?.dispose()
   selectionChangeDisposable = null
+  clientDragStart = null
+  clientSelectionText.value = ''
+  hasClientSelection.value = false
+  detachClientSelectionDragListeners()
   for (const dispose of terminalDomDisposers) dispose()
   terminalDomDisposers = []
 }

@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
-  createForcedSelectionMouseEvent,
+  buildTerminalSelectionRange,
+  getCopyableTerminalSelectionText,
+  getTerminalCellPoint,
   getTerminalSelectionText,
   isMouseEventClientSelectionCandidate,
   shouldHandleTerminalCopyShortcut,
@@ -25,6 +27,24 @@ describe('terminalClientClipboard', () => {
     }
 
     expect(getTerminalSelectionText(terminal)).toBe('client selected text')
+  })
+
+  it('prefers live terminal selection over cached selection text', () => {
+    const terminal = {
+      hasSelection: () => true,
+      getSelection: () => 'live text',
+    }
+
+    expect(getCopyableTerminalSelectionText(terminal, 'cached text')).toBe('live text')
+  })
+
+  it('falls back to cached selection text after xterm clears its live selection', () => {
+    const terminal = {
+      hasSelection: () => false,
+      getSelection: () => '',
+    }
+
+    expect(getCopyableTerminalSelectionText(terminal, 'cached text')).toBe('cached text')
   })
 
   it('handles ctrl/cmd copy shortcuts unless alt is held', () => {
@@ -67,22 +87,51 @@ describe('terminalClientClipboard', () => {
     expect(isMouseEventClientSelectionCandidate({ button: 0, altKey: false, ctrlKey: false, metaKey: false, shiftKey: true })).toBe(false)
   })
 
-  it('creates a synthetic mouse event that forces xterm selection', () => {
-    const original = new MouseEvent('mousedown', {
-      bubbles: true,
-      button: 0,
-      buttons: 1,
-      clientX: 20,
-      clientY: 30,
+  it('maps mouse coordinates to a buffer cell point', () => {
+    const point = getTerminalCellPoint(
+      { clientX: 25, clientY: 45 },
+      {
+        cols: 10,
+        rows: 5,
+        screenRect: { left: 0, top: 0, width: 100, height: 100 },
+        viewportY: 20,
+      },
+    )
+
+    expect(point).toEqual({ col: 2, row: 22 })
+  })
+
+  it('clamps mouse coordinates to terminal selection bounds', () => {
+    const point = getTerminalCellPoint(
+      { clientX: 999, clientY: -10 },
+      {
+        cols: 10,
+        rows: 5,
+        screenRect: { left: 0, top: 0, width: 100, height: 100 },
+        viewportY: 3,
+      },
+    )
+
+    expect(point).toEqual({ col: 10, row: 3 })
+  })
+
+  it('builds a forward xterm select range', () => {
+    expect(buildTerminalSelectionRange({ col: 2, row: 4 }, { col: 8, row: 4 }, 10)).toEqual({
+      column: 2,
+      row: 4,
+      length: 6,
     })
+  })
 
-    const forced = createForcedSelectionMouseEvent(original)
+  it('builds a reversed multiline xterm select range', () => {
+    expect(buildTerminalSelectionRange({ col: 4, row: 7 }, { col: 2, row: 6 }, 10)).toEqual({
+      column: 2,
+      row: 6,
+      length: 12,
+    })
+  })
 
-    expect(forced.type).toBe('mousedown')
-    expect(forced.shiftKey).toBe(true)
-    expect(forced.button).toBe(0)
-    expect(forced.buttons).toBe(1)
-    expect(forced.clientX).toBe(20)
-    expect(forced.clientY).toBe(30)
+  it('skips zero-length drag selections', () => {
+    expect(buildTerminalSelectionRange({ col: 2, row: 4 }, { col: 2, row: 4 }, 10)).toBeNull()
   })
 })
