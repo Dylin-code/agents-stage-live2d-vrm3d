@@ -2,6 +2,7 @@
   <div
     ref="containerRef"
     class="tui-bridge-container"
+    :class="{ 'client-select-mode': clientSelectionMode }"
     :style="containerStyle"
   >
     <div
@@ -32,6 +33,20 @@
           @input="onOpacityChange"
           @pointerdown.stop
         >
+        <button
+          class="tui-bridge-btn"
+          :class="{ active: clientSelectionMode }"
+          title="客戶端選取模式：開啟後拖曳會選取瀏覽器端文字，不送到 TUI（也可按住 Shift 拖曳）"
+          @click="toggleClientSelectionMode"
+          @pointerdown.stop
+        >▣</button>
+        <button
+          class="tui-bridge-btn"
+          :disabled="!hasClientSelection"
+          title="複製 xterm 選取內容到瀏覽器端剪貼簿"
+          @click="copyClientSelection"
+          @pointerdown.stop
+        >⧉</button>
         <button
           class="tui-bridge-btn"
           :class="{ active: keyToolbarVisible }"
@@ -77,12 +92,21 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { Terminal } from '@xterm/xterm'
+import type { IDisposable } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import { resolveTuiBridgeWsUrl, killTuiSession } from '../../utils/api/tuiBridge'
 import { themeNames, getTheme, loadThemeName, saveThemeName } from './terminalThemes'
 import TuiKeyToolbar from './TuiKeyToolbar.vue'
+import {
+  createForcedSelectionMouseEvent,
+  getTerminalSelectionText,
+  isMouseEventClientSelectionCandidate,
+  shouldHandleTerminalCopyShortcut,
+  writeSelectionToClientClipboard,
+  writeSelectionToClipboardEvent,
+} from './terminalClientClipboard'
 
 const POSITION_OFFSET = 30
 const MOBILE_BREAKPOINT = 640
@@ -242,11 +266,15 @@ function focusTerminalIfDesktop(): void {
 // the keyboard icon in the header.
 const keyToolbarVisible = ref(isMobileViewport())
 const keyToolbarExpanded = ref(false)
+const clientSelectionMode = ref(false)
+const hasClientSelection = ref(false)
 
 let terminal: Terminal | null = null
 let fitAddon: FitAddon | null = null
 let ws: WebSocket | null = null
 let resizeObserver: ResizeObserver | null = null
+let selectionChangeDisposable: IDisposable | null = null
+let terminalDomDisposers: Array<() => void> = []
 
 function sendBytes(data: string): void {
   if (!data) return
@@ -268,6 +296,84 @@ function toggleKeyToolbar(): void {
 
 function toggleKeyToolbarExpanded(): void {
   keyToolbarExpanded.value = !keyToolbarExpanded.value
+}
+
+function toggleClientSelectionMode(): void {
+  clientSelectionMode.value = !clientSelectionMode.value
+  focusTerminalIfDesktop()
+}
+
+function getXtermElement(): HTMLElement | null {
+  return terminalRef.value?.querySelector('.xterm') ?? null
+}
+
+function isXtermMouseEventsMode(): boolean {
+  return getXtermElement()?.classList.contains('enable-mouse-events') ?? false
+}
+
+function refreshClientSelectionState(): void {
+  hasClientSelection.value = Boolean(terminal?.hasSelection())
+}
+
+async function copyClientSelection(): Promise<void> {
+  const text = getTerminalSelectionText(terminal)
+  if (!text) {
+    refreshClientSelectionState()
+    return
+  }
+  try {
+    await writeSelectionToClientClipboard(text)
+  } catch {
+    // Browser clipboard access can be denied on insecure origins or by policy.
+  }
+}
+
+function onTerminalCopy(event: ClipboardEvent): void {
+  const text = getTerminalSelectionText(terminal)
+  if (writeSelectionToClipboardEvent(event, text)) refreshClientSelectionState()
+}
+
+function onTerminalKeyDown(event: KeyboardEvent): void {
+  if (!shouldHandleTerminalCopyShortcut(event)) return
+  const text = getTerminalSelectionText(terminal)
+  if (!text) return
+  event.preventDefault()
+  event.stopPropagation()
+  void copyClientSelection()
+}
+
+function onTerminalMouseDownCapture(event: MouseEvent): void {
+  if (!clientSelectionMode.value || !isXtermMouseEventsMode()) return
+  if (!isMouseEventClientSelectionCandidate(event)) return
+
+  event.preventDefault()
+  event.stopImmediatePropagation()
+  event.target?.dispatchEvent(createForcedSelectionMouseEvent(event))
+}
+
+function addTerminalDomListener<K extends keyof HTMLElementEventMap>(
+  element: HTMLElement,
+  type: K,
+  listener: (event: HTMLElementEventMap[K]) => void,
+  options?: boolean | AddEventListenerOptions,
+): void {
+  element.addEventListener(type, listener, options)
+  terminalDomDisposers.push(() => element.removeEventListener(type, listener, options))
+}
+
+function attachTerminalClientClipboardHandlers(): void {
+  if (!terminalRef.value) return
+  addTerminalDomListener(terminalRef.value, 'copy', onTerminalCopy, true)
+  addTerminalDomListener(terminalRef.value, 'keydown', onTerminalKeyDown, true)
+  addTerminalDomListener(terminalRef.value, 'mousedown', onTerminalMouseDownCapture, true)
+  selectionChangeDisposable = terminal?.onSelectionChange(refreshClientSelectionState) ?? null
+}
+
+function detachTerminalClientClipboardHandlers(): void {
+  selectionChangeDisposable?.dispose()
+  selectionChangeDisposable = null
+  for (const dispose of terminalDomDisposers) dispose()
+  terminalDomDisposers = []
 }
 
 function applyTheme(name: string) {
@@ -305,11 +411,13 @@ function createTerminal() {
     fontFamily: '"Cascadia Code", Menlo, Monaco, "Courier New", monospace',
     theme: base,
     scrollback: 5000,
+    macOptionClickForcesSelection: true,
   })
   fitAddon = new FitAddon()
   terminal.loadAddon(fitAddon)
   terminal.loadAddon(new WebLinksAddon())
   terminal.open(terminalRef.value)
+  attachTerminalClientClipboardHandlers()
   fitAddon.fit()
 
   terminal.onData((data) => {
@@ -482,6 +590,7 @@ onBeforeUnmount(() => {
   resizeObserver?.disconnect()
   window.removeEventListener('resize', onWindowResize)
   window.removeEventListener('orientationchange', onWindowResize)
+  detachTerminalClientClipboardHandlers()
   disconnectWs()
   terminal?.dispose()
   terminal = null
@@ -584,6 +693,14 @@ onBeforeUnmount(() => {
 .tui-bridge-btn:hover { background: #45475a; color: #cdd6f4; }
 .tui-bridge-btn.danger:hover { background: #5a2a2a; color: #fab387; }
 .tui-bridge-btn.active { background: #4a6592; color: #d6ddf0; }
+.tui-bridge-btn:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+.tui-bridge-btn:disabled:hover {
+  background: none;
+  color: #a6adc8;
+}
 
 .tui-bridge-body {
   flex: 1;
@@ -592,6 +709,10 @@ onBeforeUnmount(() => {
      own wrappers are forced transparent below so this is the *only* layer
      of bg colour behind the characters — no compound-alpha darkening. */
   background: var(--tui-body-bg, #1e1e2e);
+}
+
+.tui-bridge-container.client-select-mode .tui-bridge-body :deep(.xterm) {
+  cursor: text;
 }
 
 /* xterm.js v6 DOM renderer paints the theme bg as inline-style on multiple

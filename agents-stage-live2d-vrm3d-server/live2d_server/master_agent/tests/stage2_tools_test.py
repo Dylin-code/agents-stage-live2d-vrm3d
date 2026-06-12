@@ -29,6 +29,13 @@ from live2d_server.master_agent.tools.session_query_tools import (
     SearchSessionsTool,
 )
 from live2d_server.master_agent.tools.subtask_tools import WaitForSubTaskTool
+from live2d_server.master_agent.tools.tui_tools import (
+    TuiCaptureScreenTool,
+    TuiNewSessionTool,
+    TuiSendInputTool,
+    TuiSendKeyTool,
+    TuiWaitForStableTool,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +80,7 @@ def _ctx(
     tracker=None,
     provider=None,
     bridge=None,
+    tui_automation=None,
     conversation_id="c1",
     default_cwd=None,
     permit_full_access: bool = False,
@@ -86,6 +94,7 @@ def _ctx(
             task_tracker=tracker or SubTaskTracker(),
             loop=None,
             permit_full_access=permit_full_access,
+            tui_automation=tui_automation,
         ),
         default_cwd=default_cwd,
     )
@@ -692,6 +701,149 @@ class SwitchBranchToolTest(unittest.IsolatedAsyncioTestCase):
 
 
 # ---------------------------------------------------------------------------
+# TUI tools
+# ---------------------------------------------------------------------------
+
+
+class _FakeTuiCapture:
+    def __init__(
+        self,
+        *,
+        session_id: str = "tui-12345678",
+        text: str = "old\nnew",
+        tail_text: str = "old\nnew",
+        delta_text: str = "new",
+        stable: bool = True,
+        stable_for_sec: float = 1.5,
+    ) -> None:
+        self.session_id = session_id
+        self.text = text
+        self.tail_text = tail_text
+        self.delta_text = delta_text
+        self.delta_matched_previous_tail = True
+        self.captured_at = 123.0
+        self.stable = stable
+        self.stable_for_sec = stable_for_sec
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "session_id": self.session_id,
+            "text": self.text,
+            "tail_text": self.tail_text,
+            "delta_text": self.delta_text,
+            "delta_matched_previous_tail": self.delta_matched_previous_tail,
+            "captured_at": self.captured_at,
+            "stable": self.stable,
+            "stable_for_sec": self.stable_for_sec,
+        }
+
+
+class _FakeTuiAutomation:
+    def __init__(self) -> None:
+        self.created: list[dict[str, str]] = []
+        self.inputs: list[tuple[str, str, bool]] = []
+        self.keys: list[tuple[str, str]] = []
+        self.capture_calls: list[tuple[str, int]] = []
+        self.wait_calls: list[dict[str, object]] = []
+
+    def create_session(self, *, label: str = "", cwd: str = "", command: str = ""):
+        self.created.append({"label": label, "cwd": cwd, "command": command})
+        return SimpleNamespace(
+            session_id="tui-12345678",
+            label=label or "TUI",
+            cwd=cwd,
+            command=command,
+            created_at=1.0,
+            attached_clients=0,
+            windows=1,
+            last_activity_at=1.0,
+            to_dict=lambda: {
+                "session_id": "tui-12345678",
+                "label": label or "TUI",
+                "cwd": cwd,
+                "command": command,
+                "created_at": 1.0,
+                "attached_clients": 0,
+                "windows": 1,
+                "last_activity_at": 1.0,
+            },
+        )
+
+    def send_input(self, session_id: str, text: str, *, submit: bool = False) -> None:
+        self.inputs.append((session_id, text, submit))
+
+    def send_key(self, session_id: str, key: str) -> None:
+        self.keys.append((session_id, key))
+
+    def capture_screen(self, session_id: str, *, history_lines: int = 200):
+        self.capture_calls.append((session_id, history_lines))
+        return _FakeTuiCapture(session_id=session_id)
+
+    async def wait_until_stable(self, session_id: str, **kwargs):
+        self.wait_calls.append({"session_id": session_id, **kwargs})
+        return _FakeTuiCapture(session_id=session_id, stable=True)
+
+
+class TuiToolsTest(unittest.IsolatedAsyncioTestCase):
+    async def test_new_session_forwards_command_and_cwd(self) -> None:
+        tui = _FakeTuiAutomation()
+        result = await TuiNewSessionTool().invoke(_ctx({
+            "cwd": "/repo",
+            "command": "claude",
+            "label": "Claude TUI",
+        }, tui_automation=tui))
+        self.assertTrue(result.ok)
+        self.assertEqual(result.data["session_id"], "tui-12345678")
+        self.assertEqual(tui.created, [{
+            "cwd": "/repo",
+            "command": "claude",
+            "label": "Claude TUI",
+        }])
+
+    async def test_send_input_can_submit(self) -> None:
+        tui = _FakeTuiAutomation()
+        result = await TuiSendInputTool().invoke(_ctx({
+            "session_id": "tui-12345678",
+            "text": "/help",
+            "submit": True,
+        }, tui_automation=tui))
+        self.assertTrue(result.ok)
+        self.assertEqual(tui.inputs, [("tui-12345678", "/help", True)])
+
+    async def test_send_key_passes_key(self) -> None:
+        tui = _FakeTuiAutomation()
+        result = await TuiSendKeyTool().invoke(_ctx({
+            "session_id": "tui-12345678",
+            "key": "Down",
+        }, tui_automation=tui))
+        self.assertTrue(result.ok)
+        self.assertEqual(tui.keys, [("tui-12345678", "Down")])
+
+    async def test_capture_returns_delta_text(self) -> None:
+        tui = _FakeTuiAutomation()
+        result = await TuiCaptureScreenTool().invoke(_ctx({
+            "session_id": "tui-12345678",
+            "history_lines": 50,
+        }, tui_automation=tui))
+        self.assertTrue(result.ok)
+        self.assertEqual(result.data["delta_text"], "new")
+        self.assertEqual(tui.capture_calls, [("tui-12345678", 50)])
+
+    async def test_wait_for_stable_returns_stable_capture(self) -> None:
+        tui = _FakeTuiAutomation()
+        result = await TuiWaitForStableTool().invoke(_ctx({
+            "session_id": "tui-12345678",
+            "timeout_sec": 3,
+            "stable_for_sec": 0.5,
+            "poll_interval_sec": 0.1,
+            "history_lines": 10,
+        }, tui_automation=tui))
+        self.assertTrue(result.ok)
+        self.assertTrue(result.data["stable"])
+        self.assertEqual(tui.wait_calls[0]["history_lines"], 10)
+
+
+# ---------------------------------------------------------------------------
 # Registry sanity: every new tool actually registers and reports a schema.
 # ---------------------------------------------------------------------------
 
@@ -712,6 +864,8 @@ class RegistryCoverageTest(unittest.TestCase):
             "browse_directories",
             "list_projects", "resolve_project", "register_project",
             "list_branches", "switch_git_branch",
+            "tui_new_session", "tui_send_input", "tui_send_key",
+            "tui_capture_screen", "tui_wait_for_stable",
             "report_to_user",
         }
         self.assertEqual(names, expected)

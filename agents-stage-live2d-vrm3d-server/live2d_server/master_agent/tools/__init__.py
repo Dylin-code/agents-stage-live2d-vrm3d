@@ -21,6 +21,13 @@ from .session_query_tools import (
     SearchSessionsTool,
 )
 from .subtask_tools import WaitForSubTaskTool
+from .tui_tools import (
+    TuiCaptureScreenTool,
+    TuiNewSessionTool,
+    TuiSendInputTool,
+    TuiSendKeyTool,
+    TuiWaitForStableTool,
+)
 
 __all__ = [
     "CodexNewSessionTool",
@@ -45,4 +52,9 @@ __all__ = [
     "ListProjectsTool",
     "ResolveProjectTool",
     "RegisterProjectTool",
+    "TuiNewSessionTool",
+    "TuiSendInputTool",
+    "TuiSendKeyTool",
+    "TuiCaptureScreenTool",
+    "TuiWaitForStableTool",
 ]

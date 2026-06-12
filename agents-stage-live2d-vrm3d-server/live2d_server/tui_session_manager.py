@@ -215,6 +215,8 @@ def _run_tmux(args: list[str], *, check: bool = True) -> subprocess.CompletedPro
             cmd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=_TMUX_TIMEOUT_SEC,
             check=check,
             env=_tmux_env(),
@@ -352,6 +354,37 @@ class TuiSessionManager:
             logger.info("tui-bridge: killed session %s", session_id)
         return ok
 
+    def send_literal(self, session_id: str, text: str) -> None:
+        """Send literal text to a TUI session without invoking a shell."""
+        self._ensure_live_session(session_id)
+        if not text:
+            return
+        _run_tmux(["send-keys", "-t", session_id, "-l", text])
+        self.touch(session_id)
+
+    def send_key(self, session_id: str, key: str) -> None:
+        """Send one tmux key name to a TUI session."""
+        self._ensure_live_session(session_id)
+        key = key.strip()
+        if not key:
+            raise TuiBridgeError("key is required")
+        _run_tmux(["send-keys", "-t", session_id, key])
+        self.touch(session_id)
+
+    def capture_pane(self, session_id: str, *, history_lines: int = 200) -> str:
+        """Capture visible pane text plus a bounded amount of scrollback."""
+        self._ensure_live_session(session_id)
+        lines = max(0, min(int(history_lines), 5000))
+        # ``-a`` captures the alternate screen when a full-screen TUI
+        # (Claude Code, Codex, vim, etc.) is active. Without it tmux may
+        # return the empty main scrollback even though attach shows text.
+        args = ["capture-pane", "-t", session_id, "-a", "-p"]
+        if lines > 0:
+            args.extend(["-S", f"-{lines}"])
+        result = _run_tmux(args)
+        self.touch(session_id)
+        return result.stdout or ""
+
     def touch(self, session_id: str) -> None:
         """Update last_activity_at for a session (best-effort, no error if missing)."""
         if not _SESSION_ID_RE.match(session_id):
@@ -365,6 +398,12 @@ class TuiSessionManager:
         self._write_sidecar(meta)
 
     # -- Internal helpers ----------------------------------------------
+
+    def _ensure_live_session(self, session_id: str) -> None:
+        if not _SESSION_ID_RE.match(session_id):
+            raise TuiBridgeError(f"invalid session id: {session_id}")
+        if not self.has_session(session_id):
+            raise TuiBridgeError(f"unknown tui session: {session_id}")
 
     @staticmethod
     def _mint_session_id() -> str:

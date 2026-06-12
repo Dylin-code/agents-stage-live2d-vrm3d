@@ -51,6 +51,7 @@ class _ToolServicesAdapter:
     loop: Any
     permit_full_access: bool = False
     project_registry: Optional[ProjectRegistry] = None
+    tui_automation: Any = None
 
     # Satisfies the ToolServices Protocol; @property not needed since
     # the dataclass attributes resolve to the same names.
@@ -68,6 +69,7 @@ class MasterAgentService:
         conversation_store: Optional[ConversationStore] = None,
         persona_store: Optional[PersonaStore] = None,
         project_registry: Optional[ProjectRegistry] = None,
+        tui_automation: Any = None,
         tool_mode: ToolMode = "native",
     ) -> None:
         self._chat_model = chat_model
@@ -79,6 +81,7 @@ class MasterAgentService:
         self._store = conversation_store or ConversationStore()
         self._persona_store = persona_store
         self._project_registry = project_registry
+        self._tui_automation = tui_automation
         self._tool_mode: ToolMode = tool_mode
         self._abort_events: dict[str, asyncio.Event] = {}
 
@@ -113,6 +116,10 @@ class MasterAgentService:
     @property
     def tool_mode(self) -> ToolMode:
         return self._tool_mode
+
+    @property
+    def tui_automation(self) -> Any:
+        return self._tui_automation
 
     async def new_conversation(self) -> MasterAgentConversation:
         return await self._store.create()
@@ -174,6 +181,7 @@ class MasterAgentService:
             loop=asyncio.get_running_loop(),
             permit_full_access=permit_full_access,
             project_registry=self._project_registry,
+            tui_automation=self._tui_automation,
         )
         tool_schemas = self._registry.schemas()
         # In prompt mode we suppress the native tools field and instead embed

@@ -59,6 +59,11 @@ _TOOL_LABELS: dict[str, str] = {
     "browse_directories": "瀏覽目錄",
     "list_branches": "列出 git 分支",
     "switch_branch": "切換 git 分支",
+    "tui_new_session": "啟動 TUI 終端",
+    "tui_send_input": "輸入 TUI 文字",
+    "tui_send_key": "送出 TUI 按鍵",
+    "tui_capture_screen": "擷取 TUI 畫面",
+    "tui_wait_for_stable": "等待 TUI 穩定",
     "report_to_user": "回報結果",
 }
 

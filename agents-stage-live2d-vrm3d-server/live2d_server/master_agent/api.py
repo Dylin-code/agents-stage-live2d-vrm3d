@@ -67,6 +67,11 @@ from .tools import (
     ResolveProjectTool,
     SearchSessionsTool,
     SwitchBranchTool,
+    TuiCaptureScreenTool,
+    TuiNewSessionTool,
+    TuiSendInputTool,
+    TuiSendKeyTool,
+    TuiWaitForStableTool,
     WaitForSubTaskTool,
 )
 
@@ -112,6 +117,12 @@ def _build_default_registry() -> InMemoryToolRegistry:
     # Git.
     registry.register(ListBranchesTool())
     registry.register(SwitchBranchTool())
+    # Interactive TUI automation (tmux-backed, opt-in by env).
+    registry.register(TuiNewSessionTool())
+    registry.register(TuiSendInputTool())
+    registry.register(TuiSendKeyTool())
+    registry.register(TuiCaptureScreenTool())
+    registry.register(TuiWaitForStableTool())
     # Terminator.
     registry.register(ReportToUserTool())
     return registry
@@ -128,6 +139,7 @@ async def _get_service() -> MasterAgentService:
         # subprocesses are managed by the same service that powers the
         # legacy /api/session-bridge routes.
         from ..session_bridge_api import agent_provider, bridge_service
+        from ..tui_automation import get_tui_automation
 
         chat_model = build_chat_model()
         tracker = SubTaskTracker(state_change_hook=_on_subtask_change)
@@ -144,6 +156,7 @@ async def _get_service() -> MasterAgentService:
             conversation_store=conversation_store,
             persona_store=persona_store,
             project_registry=project_registry,
+            tui_automation=get_tui_automation(),
         )
         return _service_instance
 

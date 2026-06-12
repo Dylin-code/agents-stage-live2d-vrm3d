@@ -86,6 +86,11 @@ class ToolServices(Protocol):
         degrade gracefully when missing."""
         ...
 
+    @property
+    def tui_automation(self) -> Any:
+        """Optional tmux-backed TUI automation service used by tui_* tools."""
+        ...
+
 
 class ToolPort(Protocol):
     """One concrete tool — codex_new_session, claude_send_prompt, etc.

@@ -18,6 +18,7 @@
 
 - **可 detach / 重新 attach**：關掉瀏覽器視窗只切斷 WebSocket，session 內的進程繼續活著；之後從 sessions 列表點同一個 id 又能接回去，xterm.js 拿到完整歷史輸出
 - **能跑互動式 TUI**：tmux + alternate screen + bracketed paste / mouse 都正常，可以在裡面跑 `claude`、`codex`、`vim`、`btop` 這類重型 TUI
+- **瀏覽器端選取 / 複製**：在 TUI mouse mode 中可按住 Shift 拖曳，或切換前端 TUI 視窗的客戶端選取模式後直接拖曳；複製會寫入瀏覽器 client 剪貼簿，不走 server/tmux copy-mode。
 - **支援多 session**：每個 session 是獨立的 tmux instance，由前端右下角面板管理
 - **跨平台**：
   - macOS / Linux：標準 `tmux` + Python `pty.fork()`
@@ -32,6 +33,9 @@
 | `TUI_BRIDGE_DEFAULT_CMD` | _(空)_ | 留空：Unix 用 `$SHELL -l`，Windows 用 pwsh / powershell |
 | `TUI_BRIDGE_METADATA_PATH` | _(空)_ | label / cwd / created_at sidecar 路徑（預設 `~/.cache/agents-stage-live2d-vrm3d/tui-sessions.json`） |
 | `TUI_BRIDGE_TMUX_PATH` | _(空)_ | 手動指定 tmux/psmux 絕對路徑（PATH 找不到時的逃生口） |
+| `MASTER_AGENT_TUI_TOOLS_ENABLED` | _(跟隨 `TUI_BRIDGE_ENABLED`)_ | 啟用導演的 `tui_*` 工具；可單獨設 `false` 關閉 TG/導演端 TUI automation |
+| `MASTER_AGENT_TUI_ALLOWED_COMMANDS` | `claude,codex` | 導演/TG TUI automation 可啟動的 command allowlist（只比對可執行檔 basename，不含 `.exe`） |
+| `MASTER_AGENT_TUI_ALLOW_ANY_COMMAND` | `false` | 設 `true` 才允許導演/TG TUI automation 啟動任意 command；不影響前端 TUI Bridge |
 
 ### API 端點
 
@@ -40,6 +44,15 @@
 - `POST   /api/tui/sessions` — 新建一個 session（payload：`{label, cwd, command}`）
 - `DELETE /api/tui/sessions/{id}` — kill 指定 session
 - `WS     /api/tui/ws?session_id=<id>&cols=&rows=` — attach 到指定 session
+
+### 導演 TUI 工具
+
+導演可透過 `tui_new_session` / `tui_send_input` / `tui_send_key` / `tui_capture_screen` / `tui_wait_for_stable` 操作同一套 tmux session，讓 Telegram 也能間接操作 `claude`、`codex` 這類互動式 TUI。
+
+- 工具層不走 xterm WebSocket，而是後端直接使用 `tmux send-keys` 與 `tmux capture-pane`。
+- 預設只允許導演/TG 啟動 `claude`、`codex`；空 command（預設 shell）也會被擋。要開其他 TUI 可設定 `MASTER_AGENT_TUI_ALLOWED_COMMANDS`，或用 `MASTER_AGENT_TUI_ALLOW_ANY_COMMAND=true` 完全放行。
+- `tui_capture_screen` 與 `tui_wait_for_stable` 會記錄每個 session 上一次 capture 的尾段，下一次回傳 `delta_text`，方便導演只解析新增輸出；若 scrollback 位移，會用尾段 overlap fallback。
+- 一般 coding / review 任務仍優先使用 `codex_send_prompt` / `claude_send_prompt`；只有 slash command、登入、approval、游標操作等互動式畫面才走 TUI 工具。
 
 ### 安全警語
 
